@@ -1,0 +1,14 @@
+# Project-level Bun config — copy to bunfig.toml (gitignored) to use.
+#
+# Most people don't need this file. Only useful if your network proxies
+# the public npm registry through a private one (e.g. an internal
+# package registry, a corporate proxy, a private Verdaccio instance).
+#
+# Example layout:
+#
+# [install]
+# registry = { url = "https://your-registry.example.com/npm/some-path/", token = "$YOUR_AUTH_TOKEN_ENV_VAR" }
+#
+# Note: the trailing slash on `url` matters. Without it, Bun strips
+# the path prefix and hits the wrong endpoint. npm and yarn tolerate
+# the missing slash; Bun does not.

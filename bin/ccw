@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Dev wrapper — runs ccw via Bun without needing to build first.
+# For production use, run `bun run build` and use dist/ccw instead.
+set -e
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_DIR="$(dirname "$SCRIPT_DIR")"
+exec bun run "${REPO_DIR}/src/index.ts" "$@"

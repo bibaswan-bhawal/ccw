@@ -1,0 +1,50 @@
+# dependencies (bun install)
+node_modules
+
+# output
+out
+dist
+*.tgz
+
+# code coverage
+coverage
+*.lcov
+
+# logs
+logs
+*.log
+
+# dotenv environment variable files
+.env
+.env.development.local
+.env.test.local
+.env.production.local
+.env.local
+
+# caches
+.eslintcache
+.cache
+*.tsbuildinfo
+
+# IntelliJ based IDEs
+.idea
+
+# Finder (MacOS) folder config
+.DS_Store
+
+# Per-repo ccw config (if anyone accidentally runs ccw init in this repo)
+.ccw.json
+
+# Lockfiles are not committed — they bake in resolved registry URLs
+# from whichever registry generated them, which causes friction for
+# contributors on different networks (corporate proxy vs public npm).
+# bun install resolves fresh from package.json instead.
+bun.lock
+bun.lockb
+package-lock.json
+
+# Local Bun config (keep example, ignore real one if someone adds it)
+bunfig.toml
+
+# Bun build scratch files
+.*.bun-build
