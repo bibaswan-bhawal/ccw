@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { render } from "ink";
+import { altScreenSupported } from "../terminal.ts";
 import { AbortModal, Wizard } from "./Wizard.tsx";
 import {
   type AnswerMap,
@@ -25,8 +26,13 @@ export interface WizardResult {
 
 /**
  * Mount the wizard, drive it to completion (or abort), and return the
- * collected answers. Renders in Ink's alternate screen buffer so the
- * terminal scrollback is preserved on exit and resize redraws cleanly.
+ * collected answers.
+ *
+ * On terminals that handle the alt-screen buffer cleanly (iTerm2,
+ * Terminal.app, Kitty, WezTerm, etc.), we render in alt-screen so the
+ * scrollback is preserved on exit and resize redraws are clean. Other
+ * terminals (notably Warp) get an inline render with the natural
+ * scrollback flow — no full-screen takeover.
  */
 export async function runWizard(options: RunWizardOptions): Promise<WizardResult> {
   let resolveOuter: (result: WizardResult) => void = () => {};
@@ -34,9 +40,10 @@ export async function runWizard(options: RunWizardOptions): Promise<WizardResult
     resolveOuter = r;
   });
 
-  const root = render(<WizardHost {...options} onComplete={(r) => resolveOuter(r)} />, {
+  const altScreen = altScreenSupported();
+  const root = render(<WizardHost {...options} altScreen={altScreen} onComplete={(r) => resolveOuter(r)} />, {
     exitOnCtrlC: false,
-    alternateScreen: true,
+    alternateScreen: altScreen,
   });
 
   const result = await outer;
@@ -46,10 +53,11 @@ export async function runWizard(options: RunWizardOptions): Promise<WizardResult
 }
 
 interface HostProps extends RunWizardOptions {
+  altScreen: boolean;
   onComplete: (result: WizardResult) => void;
 }
 
-function WizardHost({ steps, title, subtitle, onComplete }: HostProps): React.ReactElement {
+function WizardHost({ steps, title, subtitle, altScreen, onComplete }: HostProps): React.ReactElement {
   const [state, setState] = useState<WizardState>(() => initialState(steps));
   const [showAbort, setShowAbort] = useState(false);
 
@@ -106,6 +114,7 @@ function WizardHost({ steps, title, subtitle, onComplete }: HostProps): React.Re
       state={state}
       title={title}
       subtitle={subtitle}
+      fullHeight={altScreen}
       onAnswer={(value) => dispatch({ type: "answer", value })}
       onBack={() => dispatch({ type: "back" })}
       onAbortRequest={() => setShowAbort(true)}

@@ -18,6 +18,13 @@ export interface WizardProps {
   title: string;
   /** Subtitle shown under the title (e.g. "ccw init"). */
   subtitle?: string;
+  /**
+   * When true, the wizard pins itself to the full terminal height with
+   * the footer at the bottom. Set to false on terminals that can't do
+   * alt-screen (Warp), where we want inline-scrollback rendering with
+   * no extra padding.
+   */
+  fullHeight?: boolean;
   /** Submit the current step's answer. */
   onAnswer: (value: unknown) => void;
   /** Move back one step. */
@@ -361,6 +368,7 @@ export function Wizard({
   state,
   title,
   subtitle,
+  fullHeight = true,
   onAnswer,
   onBack,
   onAbortRequest,
@@ -383,8 +391,15 @@ export function Wizard({
   const step = state.steps[state.cursor];
   const canBack = state.cursor > 0 && !state.verifying;
 
+  // In fullscreen-capable terminals we pin the layout to the full pane
+  // (footer at the bottom). On Warp / inline-only terminals we render
+  // a compact natural-flow layout — no fixed height, no flex-grow filler.
+  const rootSizing = fullHeight
+    ? { width: columns, height: rows, paddingX: 2, paddingY: 1 }
+    : { paddingY: 1 };
+
   return (
-    <Box flexDirection="column" width={columns} height={rows} paddingX={2} paddingY={1}>
+    <Box flexDirection="column" {...rootSizing}>
       <Header title={title} subtitle={subtitle} />
       <StepIndicator state={state} />
       {state.error ? (
@@ -393,7 +408,7 @@ export function Wizard({
           <Text color="red">{state.error}</Text>
         </Box>
       ) : null}
-      <Box flexDirection="column" flexGrow={1}>
+      <Box flexDirection="column" flexGrow={fullHeight ? 1 : 0}>
         {step?.type === "text" ? <TextStepView step={step} state={state} onAnswer={onAnswer} /> : null}
         {step?.type === "select" ? <SelectStepView step={step} state={state} onAnswer={onAnswer} /> : null}
         {step?.type === "multiselect" ? (

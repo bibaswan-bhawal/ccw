@@ -1,5 +1,6 @@
 import React, { useState } from "react";
 import { Box, render, Text, useApp, useInput } from "ink";
+import { altScreenSupported } from "./terminal.ts";
 import { ui } from "./ui.ts";
 
 /**
@@ -58,12 +59,16 @@ export async function pick<T>(options: PickerOptions<T>): Promise<T | undefined>
   const { items } = options;
   if (items.length === 0) return undefined;
 
-  if (options.fullscreen) process.stdout.write(ALT_SCREEN_ENTER);
+  // Honor the caller's fullscreen request only when the terminal supports
+  // alt-screen rendering. Warp and similar terminals fall back to inline.
+  const useAltScreen = options.fullscreen && altScreenSupported();
+  if (useAltScreen) process.stdout.write(ALT_SCREEN_ENTER);
 
   let result: T | undefined = undefined;
   const instance = render(
     <SinglePicker
       {...options}
+      fullscreen={useAltScreen}
       onResolve={(value) => {
         result = value;
       }}
@@ -73,7 +78,7 @@ export async function pick<T>(options: PickerOptions<T>): Promise<T | undefined>
   try {
     await instance.waitUntilExit();
   } finally {
-    if (options.fullscreen) process.stdout.write(ALT_SCREEN_LEAVE);
+    if (useAltScreen) process.stdout.write(ALT_SCREEN_LEAVE);
   }
   return result;
 }
@@ -86,12 +91,14 @@ export async function pickMany<T>(options: MultiPickerOptions<T>): Promise<T[] |
   const { items } = options;
   if (items.length === 0) return [];
 
-  if (options.fullscreen) process.stdout.write(ALT_SCREEN_ENTER);
+  const useAltScreen = options.fullscreen && altScreenSupported();
+  if (useAltScreen) process.stdout.write(ALT_SCREEN_ENTER);
 
   let result: T[] | undefined = undefined;
   const instance = render(
     <MultiPicker
       {...options}
+      fullscreen={useAltScreen}
       onResolve={(values) => {
         result = values;
       }}
@@ -101,7 +108,7 @@ export async function pickMany<T>(options: MultiPickerOptions<T>): Promise<T[] |
   try {
     await instance.waitUntilExit();
   } finally {
-    if (options.fullscreen) process.stdout.write(ALT_SCREEN_LEAVE);
+    if (useAltScreen) process.stdout.write(ALT_SCREEN_LEAVE);
   }
   return result;
 }
