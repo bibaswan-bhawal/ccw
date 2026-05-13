@@ -1,16 +1,25 @@
 /**
- * `ccw config` — manage global ccw settings stored at ~/.ccw/settings.json.
+ * `ccw config` — manage global ccw settings.
  *
- * Subcommands:
- *   ccw config list                    show every setting + current value + source
- *   ccw config get <key>               print one setting's resolved value
- *   ccw config set <key> <value>       persist a value (validated against schema)
- *   ccw config unset <key>             remove the user override (revert to default/env)
- *   ccw config path                    print the absolute path to settings.json
+ * Default invocation is an interactive wizard that lists every setting
+ * and lets the user edit it. Flags expose the scriptable equivalents:
+ *
+ *   ccw config                       interactive wizard
+ *   ccw config --get <key>           print one resolved value
+ *   ccw config --set <key> <value>   persist a value (validated)
+ *   ccw config --unset <key>         remove a stored override
+ *   ccw config --path                print the absolute settings path
  */
 
-import { describeSetting, loadSettings, setSetting, settingsPath, unsetSetting } from '../lib/settings/store.ts';
-import { listSettingKeys, parseSettingValue, SETTINGS_SCHEMA, type SettingsKey } from '../lib/settings/schema.ts';
+import { describeSetting, setSetting, settingsPath, unsetSetting } from '../lib/settings/store.ts';
+import {
+  listSettingKeys,
+  parseSettingValue,
+  SETTINGS_SCHEMA,
+  type SettingDef,
+  type SettingsKey,
+} from '../lib/settings/schema.ts';
+import { runWizard, type AnswerMap, type InitStep } from '../lib/wizard/index.ts';
 import { ui } from '../lib/ui.ts';
 
 function isKey(name: string): name is SettingsKey {
@@ -28,39 +37,7 @@ function formatValue(value: unknown): string {
   return JSON.stringify(value);
 }
 
-function sourceLabel(source: 'env' | 'file' | 'default'): string {
-  switch (source) {
-    case 'env':
-      return ui.cyan('env');
-    case 'file':
-      return ui.green('file');
-    case 'default':
-      return ui.dim('default');
-  }
-}
-
-export function runConfigList(): void {
-  const settings = loadSettings();
-  void settings;
-  const keys = listSettingKeys();
-  const longestKey = Math.max(...keys.map((k) => k.length));
-  const longestValue = Math.max(...keys.map((k) => formatValue(describeSetting(k).value).length));
-
-  ui.heading('Global ccw settings');
-  for (const key of keys) {
-    const def = SETTINGS_SCHEMA[key];
-    const { value, source } = describeSetting(key);
-    const padKey = key.padEnd(longestKey);
-    const padVal = formatValue(value).padEnd(longestValue);
-    console.log(`  ${ui.bold(padKey)}  ${padVal}  ${sourceLabel(source)}`);
-    console.log(`    ${ui.dim(def.description)}`);
-    if (def.envVar) {
-      console.log(`    ${ui.dim(`env: ${def.envVar}`)}`);
-    }
-  }
-  ui.blank();
-  ui.hint(`Stored at ${settingsPath()}`);
-}
+// --- Scriptable paths ---------------------------------------------------
 
 export function runConfigGet(key: string): void {
   if (!isKey(key)) unknownKey(key);
@@ -89,4 +66,99 @@ export function runConfigUnset(key: string): void {
 
 export function runConfigPath(): void {
   console.log(settingsPath());
+}
+
+// --- Interactive wizard -------------------------------------------------
+
+const SECTION = 'Global settings';
+
+function buildSettingStep(key: SettingsKey): InitStep {
+  const def = SETTINGS_SCHEMA[key] as SettingDef;
+  const { value, source } = describeSetting(key);
+  const sourceTag = source === 'env' ? ' (currently set via env var)' : '';
+  const hint = `${def.description}${sourceTag}`;
+
+  if (def.type === 'enum') {
+    return {
+      id: key,
+      section: SECTION,
+      type: 'select',
+      question: key,
+      hint,
+      default: String(value),
+      options: (def.options as readonly string[]).map((opt) => ({
+        value: opt,
+        label: opt,
+      })),
+    };
+  }
+
+  if (def.type === 'boolean') {
+    return {
+      id: key,
+      section: SECTION,
+      type: 'select',
+      question: key,
+      hint,
+      default: value ? 'true' : 'false',
+      options: [
+        { value: 'true', label: 'true' },
+        { value: 'false', label: 'false' },
+      ],
+    };
+  }
+
+  // number / string — render as text input.
+  return {
+    id: key,
+    section: SECTION,
+    type: 'text',
+    question: key,
+    hint,
+    default: String(value),
+    required: false,
+  };
+}
+
+export async function runConfigInteractive(): Promise<void> {
+  const keys = listSettingKeys();
+  const steps = keys.map(buildSettingStep);
+
+  const result = await runWizard({
+    steps,
+    title: 'Global ccw settings',
+    subtitle: 'Edit each value, or hit Enter to keep the current default.',
+  });
+
+  if (result.aborted) {
+    ui.hint('Aborted. No changes saved.');
+    return;
+  }
+
+  // Persist each answer that differs from its current resolved value.
+  // Skip env-shadowed settings — those would be silently overridden anyway.
+  const answers: AnswerMap = result.answers;
+  let savedCount = 0;
+  for (const key of keys) {
+    const raw = answers[key];
+    if (raw === undefined) continue;
+    const { value: current, source } = describeSetting(key);
+    if (source === 'env') continue; // user can't override env from this UI
+
+    const parsed = parseSettingValue(key, String(raw));
+    if ('error' in parsed) {
+      ui.warn(`${key}: ${parsed.error} — kept previous value.`);
+      continue;
+    }
+    if (parsed.value === current) continue;
+    setSetting(key, parsed.value);
+    savedCount += 1;
+  }
+
+  ui.blank();
+  if (savedCount === 0) {
+    ui.success('No changes.');
+  } else {
+    ui.success(`Saved ${savedCount} setting${savedCount === 1 ? '' : 's'} to ${settingsPath()}`);
+  }
 }

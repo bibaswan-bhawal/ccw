@@ -5,7 +5,7 @@ import { runInit } from './commands/init.ts';
 import { runCreate } from './commands/create.ts';
 import { runLs, runPicker } from './commands/ls.ts';
 import { runRm } from './commands/rm.ts';
-import { runConfigGet, runConfigList, runConfigPath, runConfigSet, runConfigUnset } from './commands/config.ts';
+import { runConfigGet, runConfigInteractive, runConfigPath, runConfigSet, runConfigUnset } from './commands/config.ts';
 import { ConfigMissingError } from './lib/config.ts';
 import { RESERVED_NAMES, isReservedName } from './lib/reserved.ts';
 import { findClosestMatch } from './lib/suggest.ts';
@@ -55,28 +55,39 @@ async function main(): Promise<void> {
       await runRm(featureName);
     });
 
-  const config = program.command('config').description('Manage global ccw settings (~/.ccw/settings.json)');
-  config
-    .command('list')
-    .alias('ls')
-    .description('Show every setting with its current value and source')
-    .action(() => runConfigList());
-  config
-    .command('get <key>')
-    .description('Print a single resolved setting')
-    .action((key: string) => runConfigGet(key));
-  config
-    .command('set <key> <value>')
-    .description('Persist a setting to ~/.ccw/settings.json')
-    .action((key: string, value: string) => runConfigSet(key, value));
-  config
-    .command('unset <key>')
-    .description('Remove a stored override (revert to env or default)')
-    .action((key: string) => runConfigUnset(key));
-  config
-    .command('path')
-    .description('Print the absolute path to the settings file')
-    .action(() => runConfigPath());
+  program
+    .command('config')
+    .description('Edit global ccw settings (interactive). Use flags for scripting.')
+    .option('--get <key>', 'Print a single resolved setting and exit')
+    .option('--set <key=value>', 'Persist a setting and exit (e.g. --set update_channel=prerelease)')
+    .option('--unset <key>', 'Remove a stored override and exit')
+    .option('--path', 'Print the absolute path to the settings file and exit')
+    .action(async (opts: { get?: string; set?: string; unset?: string; path?: boolean }) => {
+      if (opts.path) {
+        runConfigPath();
+        return;
+      }
+      if (opts.get) {
+        runConfigGet(opts.get);
+        return;
+      }
+      if (opts.unset) {
+        runConfigUnset(opts.unset);
+        return;
+      }
+      if (opts.set) {
+        const eq = opts.set.indexOf('=');
+        if (eq < 0) {
+          ui.error('--set expects key=value (got "' + opts.set + '")');
+          process.exit(1);
+        }
+        const key = opts.set.slice(0, eq);
+        const value = opts.set.slice(eq + 1);
+        runConfigSet(key, value);
+        return;
+      }
+      await runConfigInteractive();
+    });
 
   // Fallback: any other positional arg creates/opens a worktree with that name.
   // No arg = interactive picker (falls back to print list on non-TTY).
