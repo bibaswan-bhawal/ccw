@@ -5,6 +5,7 @@ import { runInit } from './commands/init.ts';
 import { runCreate } from './commands/create.ts';
 import { runLs, runPicker } from './commands/ls.ts';
 import { runRm } from './commands/rm.ts';
+import { runConfigGet, runConfigList, runConfigPath, runConfigSet, runConfigUnset } from './commands/config.ts';
 import { ConfigMissingError } from './lib/config.ts';
 import { RESERVED_NAMES, isReservedName } from './lib/reserved.ts';
 import { findClosestMatch } from './lib/suggest.ts';
@@ -13,7 +14,7 @@ import { ui } from './lib/ui.ts';
 // Read version at build time — Bun embeds the package.json value.
 import pkg from '../package.json' with { type: 'json' };
 
-const KNOWN_COMMANDS = ['init', 'ls', 'list', 'rm', 'remove', 'help', 'version'];
+const KNOWN_COMMANDS = ['init', 'ls', 'list', 'rm', 'remove', 'config', 'help', 'version'];
 
 async function main(): Promise<void> {
   checkDependencies();
@@ -53,6 +54,29 @@ async function main(): Promise<void> {
     .action(async (featureName: string | undefined) => {
       await runRm(featureName);
     });
+
+  const config = program.command('config').description('Manage global ccw settings (~/.ccw/settings.json)');
+  config
+    .command('list')
+    .alias('ls')
+    .description('Show every setting with its current value and source')
+    .action(() => runConfigList());
+  config
+    .command('get <key>')
+    .description('Print a single resolved setting')
+    .action((key: string) => runConfigGet(key));
+  config
+    .command('set <key> <value>')
+    .description('Persist a setting to ~/.ccw/settings.json')
+    .action((key: string, value: string) => runConfigSet(key, value));
+  config
+    .command('unset <key>')
+    .description('Remove a stored override (revert to env or default)')
+    .action((key: string) => runConfigUnset(key));
+  config
+    .command('path')
+    .description('Print the absolute path to the settings file')
+    .action(() => runConfigPath());
 
   // Fallback: any other positional arg creates/opens a worktree with that name.
   // No arg = interactive picker (falls back to print list on non-TTY).

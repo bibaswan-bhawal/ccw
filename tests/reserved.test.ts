@@ -8,6 +8,7 @@ describe('reserved names', () => {
     expect(isReservedName('list')).toBe(true);
     expect(isReservedName('rm')).toBe(true);
     expect(isReservedName('remove')).toBe(true);
+    expect(isReservedName('config')).toBe(true);
     expect(isReservedName('help')).toBe(true);
     expect(isReservedName('version')).toBe(true);
   });

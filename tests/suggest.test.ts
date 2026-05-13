@@ -31,13 +31,14 @@ describe('editDistance', () => {
 });
 
 describe('findClosestMatch', () => {
-  const commands = ['init', 'ls', 'list', 'rm', 'remove', 'help', 'version'];
+  const commands = ['init', 'ls', 'list', 'rm', 'remove', 'config', 'help', 'version'];
 
   test('finds exact typo corrections', () => {
     expect(findClosestMatch('hlp', commands)).toBe('help');
     expect(findClosestMatch('liiist', commands)).toBe('list');
     expect(findClosestMatch('remv', commands)).toBe('rm');
     expect(findClosestMatch('vrsion', commands)).toBe('version');
+    expect(findClosestMatch('cnfig', commands)).toBe('config');
   });
 
   test('prefers the shortest match when tied', () => {
