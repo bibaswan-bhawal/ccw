@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.1](https://github.com/bibaswan-bhawal/ccw/compare/v0.1.0...v0.1.1) (2026-05-27)
+
+
+### Documentation
+
+* add security policy ([a57397b](https://github.com/bibaswan-bhawal/ccw/commit/a57397bf17fe46e9cea13813584c80abe017d536))
+* document brew install, ccw update, and release verification ([ee900b6](https://github.com/bibaswan-bhawal/ccw/commit/ee900b65232ea316c991617a29de4dbd8d8116ae))
+
 ## [0.1.0](https://github.com/bibaswan-bhawal/ccw/compare/v0.1.0...v0.1.0) (2026-05-27)
 
 
