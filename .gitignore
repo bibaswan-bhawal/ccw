@@ -54,3 +54,9 @@ bunfig.toml
 
 # Local handoff / context doc — kept around for personal notes but never shipped
 HANDOFF.md
+
+# Local minisign keypair files — the private key is in the GitHub Actions
+# secret and the public key is embedded in src/lib/update/signing-key.ts.
+# These artifacts must never land in version control.
+ccw-release.key
+ccw-release.pub
