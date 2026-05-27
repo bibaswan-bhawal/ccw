@@ -11,11 +11,22 @@ Spin up git worktrees with persistent [Claude Code](https://docs.claude.com/en/d
 
 ## Requirements
 
-- [Bun](https://bun.sh) (for now — binaries will be shipped soon)
 - [Claude Code CLI](https://docs.claude.com/en/docs/claude-code) on `$PATH`
 - `git`
 
 ## Installation
+
+### Homebrew (recommended)
+
+```bash
+brew install bibaswan-bhawal/ccw/ccw
+```
+
+Updates: `brew upgrade ccw`. `ccw update` will detect the brew install and route you back here.
+
+### Direct binary
+
+Pre-built binaries for macOS arm64/x64 and Linux x64 are attached to each [GitHub Release](https://github.com/bibaswan-bhawal/ccw/releases). Download the appropriate binary, drop it on your `$PATH`, and `chmod +x` it. After that, `ccw update` self-updates against future releases (with full signature + attestation verification).
 
 ### From source (development)
 
@@ -27,14 +38,7 @@ bun install
 export PATH="$(pwd)/bin:$PATH"
 ```
 
-> **Note**: If your network proxies npm through a private registry, see the [Development](#development) section for `bunfig.toml` setup.
-
-### Homebrew (coming soon)
-
-```bash
-brew tap bibaswan-bhawal/ccw
-brew install ccw
-```
+Source builds require [Bun](https://bun.sh). If your network proxies npm through a private registry, see the [Development](#development) section for `bunfig.toml` setup.
 
 ## Quick start
 
@@ -58,13 +62,15 @@ ccw rm PROJ-123-add-new-thing
 
 ## Commands
 
-| Command            | Description                                             |
-| ------------------ | ------------------------------------------------------- |
-| `ccw init`         | Interactive setup for the current repo                  |
-| `ccw`              | Interactive picker of existing worktrees                |
-| `ccw <feature>`    | Create worktree + start Claude Code (resumes if exists) |
-| `ccw ls`           | List active worktrees                                   |
-| `ccw rm [feature]` | Remove a worktree and its session                       |
+| Command            | Description                                                          |
+| ------------------ | -------------------------------------------------------------------- |
+| `ccw init`         | Interactive setup for the current repo                               |
+| `ccw`              | Interactive picker of existing worktrees                             |
+| `ccw <feature>`    | Create worktree + start Claude Code (resumes if exists)              |
+| `ccw ls`           | List active worktrees                                                |
+| `ccw rm [feature]` | Remove a worktree and its session                                    |
+| `ccw config`       | Edit global ccw settings (interactive; supports `--get`/`--set`)     |
+| `ccw update`       | Self-update to the latest release; skips when installed via Homebrew |
 
 ## Configuration
 
@@ -113,6 +119,31 @@ Each plugin owns its own configuration flow (so its prompts stay in one place) a
 | `jira` | Task provider | [`src/plugins/jira/README.md`](src/plugins/jira/README.md) |
 
 To disable all plugins, set `"plugins": {}` in your repo config. ccw still works — you just lose task detection and any plugin-provided lifecycle hooks.
+
+## Security
+
+Each release is signed and attested before publication. See [SECURITY.md](SECURITY.md) for the full policy, supported versions, and how to report vulnerabilities.
+
+`ccw update` enforces three independent verification layers before installing any binary:
+
+1. **SHA-256 manifest** — pins the binary's hash against a signed `SHA256SUMS` file.
+2. **Minisign signature** — the manifest is signed by the ccw release key (public key embedded in every ccw binary).
+3. **Sigstore attestation** — the binary is cryptographically tied to the GitHub Actions workflow run that produced it.
+
+To manually verify a release:
+
+```bash
+# Download release assets
+gh release download v0.1.0 --repo bibaswan-bhawal/ccw
+
+# Verify the minisign signature
+minisign -Vm SHA256SUMS -P RWTX1Db0eaMFBoWsAN0cI0XodrqfXrJeqPsHBqLfNB6UaSXUwGE74NhH
+
+# Verify Sigstore build provenance for any binary
+gh attestation verify ccw-macos-arm64 --owner bibaswan-bhawal
+```
+
+Homebrew users get the SHA-256 pin for free (brew checks the formula's hash on install). The signature and attestation chains kick in when `ccw update` runs.
 
 ## Development
 
