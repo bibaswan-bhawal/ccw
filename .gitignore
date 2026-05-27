@@ -48,3 +48,9 @@ bunfig.toml
 
 # Bun build scratch files
 .*.bun-build
+
+# Bun's local install cache
+.bun
+
+# Local handoff / context doc — kept around for personal notes but never shipped
+HANDOFF.md
