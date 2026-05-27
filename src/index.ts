@@ -6,6 +6,8 @@ import { runCreate } from './commands/create.ts';
 import { runLs, runPicker } from './commands/ls.ts';
 import { runRm } from './commands/rm.ts';
 import { runConfigGet, runConfigInteractive, runConfigPath, runConfigSet, runConfigUnset } from './commands/config.ts';
+import { runUpdate } from './commands/update.ts';
+import { maybeNotifyUpdate } from './lib/update/notify.ts';
 import { ConfigMissingError } from './lib/config.ts';
 import { RESERVED_NAMES, isReservedName } from './lib/reserved.ts';
 import { findClosestMatch } from './lib/suggest.ts';
@@ -14,10 +16,11 @@ import { ui } from './lib/ui.ts';
 // Read version at build time — Bun embeds the package.json value.
 import pkg from '../package.json' with { type: 'json' };
 
-const KNOWN_COMMANDS = ['init', 'ls', 'list', 'rm', 'remove', 'config', 'help', 'version'];
+const KNOWN_COMMANDS = ['init', 'ls', 'list', 'rm', 'remove', 'config', 'update', 'help', 'version'];
 
 async function main(): Promise<void> {
   checkDependencies();
+  maybeNotifyUpdate();
 
   const program = new Command();
 
@@ -87,6 +90,14 @@ async function main(): Promise<void> {
         return;
       }
       await runConfigInteractive();
+    });
+
+  program
+    .command('update')
+    .description('Update ccw to the latest release (skips if installed via Homebrew)')
+    .option('--check', 'Check for an update and print the result without installing')
+    .action(async (opts: { check?: boolean }) => {
+      await runUpdate({ check: opts.check });
     });
 
   // Fallback: any other positional arg creates/opens a worktree with that name.

@@ -31,7 +31,7 @@ describe('editDistance', () => {
 });
 
 describe('findClosestMatch', () => {
-  const commands = ['init', 'ls', 'list', 'rm', 'remove', 'config', 'help', 'version'];
+  const commands = ['init', 'ls', 'list', 'rm', 'remove', 'config', 'update', 'help', 'version'];
 
   test('finds exact typo corrections', () => {
     expect(findClosestMatch('hlp', commands)).toBe('help');

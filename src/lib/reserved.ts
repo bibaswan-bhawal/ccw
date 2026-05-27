@@ -12,6 +12,7 @@ export const RESERVED_NAMES = [
   'rm',
   'remove',
   'config',
+  'update',
   'help',
   'version',
   // Common flags mistaken for commands

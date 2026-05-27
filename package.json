@@ -34,6 +34,8 @@
     "format:check": "prettier --check \"src/**/*.ts\" \"tests/**/*.ts\" \"*.{json,md,yml}\""
   },
   "dependencies": {
+    "@sigstore/bundle": "^4.0.0",
+    "@sigstore/verify": "^3.1.1",
     "commander": "^12.1.0",
     "ink": "^7.0.2",
     "ink-spinner": "^5.0.0",
