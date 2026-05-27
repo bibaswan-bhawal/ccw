@@ -1,0 +1,32 @@
+class Ccw < Formula
+  desc "Manage git worktrees with persistent Claude Code sessions"
+  homepage "https://github.com/bibaswan-bhawal/ccw"
+  version "__VERSION__"
+  license "MIT"
+
+  on_macos do
+    on_arm do
+      url "https://github.com/bibaswan-bhawal/ccw/releases/download/v#{version}/ccw-macos-arm64"
+      sha256 "__SHA_MACOS_ARM64__"
+    end
+    on_intel do
+      url "https://github.com/bibaswan-bhawal/ccw/releases/download/v#{version}/ccw-macos-x64"
+      sha256 "__SHA_MACOS_X64__"
+    end
+  end
+
+  on_linux do
+    on_intel do
+      url "https://github.com/bibaswan-bhawal/ccw/releases/download/v#{version}/ccw-linux-x64"
+      sha256 "__SHA_LINUX_X64__"
+    end
+  end
+
+  def install
+    bin.install Dir["ccw-*"].first => "ccw"
+  end
+
+  test do
+    assert_match version.to_s, shell_output("#{bin}/ccw --version")
+  end
+end
