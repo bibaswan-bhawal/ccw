@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.2](https://github.com/bibaswan-bhawal/ccw/compare/v0.1.1...v0.1.2) (2026-05-28)
+
+
+### Bug Fixes
+
+* make Sigstore attestation verification actually work under Bun ([e1f25f1](https://github.com/bibaswan-bhawal/ccw/commit/e1f25f1e83a08f7d2b59e057c66e0a5eadce7645))
+
 ## [0.1.1](https://github.com/bibaswan-bhawal/ccw/compare/v0.1.0...v0.1.1) (2026-05-27)
 
 
