@@ -2,6 +2,7 @@ import type { Plugin, PluginInit, Task, TaskBadge, TaskProvider } from '../../li
 import type { AnswerMap, InitStep } from '../../lib/wizard/index.ts';
 import { readCredentials, writeCredentials } from '../../lib/credentials.ts';
 import { extractJiraKey, fetchJiraIssue, formatJiraIssue, JiraError, verifyAuth, type JiraAuth } from './api.ts';
+import { classifyDescriptionField } from './classifier.ts';
 
 const PLUGIN_NAME = 'jira';
 const TOKEN_INSTRUCTIONS_URL = 'https://id.atlassian.com/manage-profile/security/api-tokens';
@@ -79,20 +80,28 @@ const taskProvider: TaskProvider = {
     const auth = resolveAuth(config);
     if ('error' in auth) throw new JiraError(auth.error);
     const issue = await fetchJiraIssue(auth, key);
+
+    // Identify which field holds the description for this (project, ticket
+    // type). Cached after the first lookup; subsequent fetches skip the LLM
+    // call. If the classifier fails or claude -p is unavailable, falls back
+    // to a heuristic — the plugin always produces useful context.
+    const descriptionField = config.project ? classifyDescriptionField(issue, { project: config.project }) : undefined;
+    const description = descriptionField ? (issue.fields[descriptionField]?.text ?? '') : '';
+
     return {
       id: issue.key,
       title: issue.summary,
       url: issue.url,
       status: issue.status,
-      description: issue.description,
-      claudeContext: formatJiraIssue(issue),
+      description,
+      claudeContext: formatJiraIssue(issue, { descriptionField }),
       metadata: {
         issueType: issue.issueType,
         priority: issue.priority,
         assignee: issue.assignee,
+        reporter: issue.reporter,
         labels: issue.labels,
-        acceptanceCriteria: issue.acceptanceCriteria,
-        recentComments: issue.recentComments,
+        descriptionField: descriptionField ?? null,
       },
     };
   },
