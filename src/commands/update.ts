@@ -35,6 +35,11 @@ import { ui } from '../lib/ui.ts';
 const REPO_OWNER = 'bibaswan-bhawal';
 const REPO_NAME = 'ccw';
 const WORKFLOW_PATH = '.github/workflows/release.yml';
+// release-please creates the tag from a push to main, so the signing cert's
+// SAN encodes the trigger ref — refs/heads/main — not the tag ref. Pinning
+// the policy to main is the right tightness; tightening further would require
+// switching to a tag-triggered release workflow.
+const WORKFLOW_REF = 'refs/heads/main';
 
 export interface UpdateOptions {
   check?: boolean;
@@ -132,7 +137,7 @@ export async function runUpdate(opts: UpdateOptions): Promise<void> {
         repo: REPO_NAME,
         digest: computedSha,
       });
-      const expectedIdentity = `https://github.com/${REPO_OWNER}/${REPO_NAME}/${WORKFLOW_PATH}@refs/tags/${release.tag}`;
+      const expectedIdentity = `https://github.com/${REPO_OWNER}/${REPO_NAME}/${WORKFLOW_PATH}@${WORKFLOW_REF}`;
       verifyAttestation({
         bundleJson: bundle,
         artifactDigest: computedSha,

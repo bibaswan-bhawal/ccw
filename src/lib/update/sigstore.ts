@@ -23,9 +23,14 @@
  *     by the specified workflow.
  */
 
+// MUST come before any @sigstore/* imports — patches crypto.verify so the
+// underlying libraries can verify ECDSA signatures under Bun. See file
+// header for the gory details.
+import './crypto-shim.ts';
+
 import { bundleFromJSON, type Bundle } from '@sigstore/bundle';
 import { Verifier, toSignedEntity, toTrustMaterial } from '@sigstore/verify';
-import type { TrustedRoot } from '@sigstore/protobuf-specs';
+import { TrustedRoot } from '@sigstore/protobuf-specs';
 import trustedRootJson from './trusted-root.json' with { type: 'json' };
 
 export class AttestationError extends Error {
@@ -39,10 +44,13 @@ export class AttestationError extends Error {
  * Public-Sigstore trusted root, vendored from
  * https://tuf-repo-cdn.sigstore.dev (extracted from sigstore-js's TUF seeds).
  *
- * The cast to `TrustedRoot` is safe because the JSON shape is the canonical
- * protobuf-JSON serialization that @sigstore/protobuf-specs expects.
+ * Must round-trip through `TrustedRoot.fromJSON` — not a plain cast — because
+ * the JSON shape encodes timestamps as ISO strings and bytes as base64.
+ * `fromJSON` converts those into Date objects and Buffers; without it, date
+ * comparisons in `filterCertAuthorities`/`filterTLogAuthorities` silently
+ * return empty arrays (string-vs-Date comparison coerces to string).
  */
-const TRUSTED_ROOT = trustedRootJson as unknown as TrustedRoot;
+const TRUSTED_ROOT = TrustedRoot.fromJSON(trustedRootJson);
 
 export interface VerifyAttestationOptions {
   /** Raw bundle JSON from GitHub's attestations API (after snappy decompression). */
