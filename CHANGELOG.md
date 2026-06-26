@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.2.0](https://github.com/bibaswan-bhawal/ccw/compare/v0.1.2...v0.2.0) (2026-06-26)
+
+
+### Features
+
+* **jira:** fetch every field, classify description via claude -p ([cf52b84](https://github.com/bibaswan-bhawal/ccw/commit/cf52b84ebb8aa85658f72b0623ae0191950b3424))
+
+
+### Bug Fixes
+
+* **claude:** relinquish stdin before launching Claude ([72f8b3c](https://github.com/bibaswan-bhawal/ccw/commit/72f8b3ca4404401e4acf15ba571daf928375bfba))
+* **jira:** run description classifier without blocking the event loop ([c8c8e0d](https://github.com/bibaswan-bhawal/ccw/commit/c8c8e0da630a9f2bd41438b4ea390ef1b4f63cd2))
+* **update:** bound update-check fetch with a 5s timeout ([06c2cbd](https://github.com/bibaswan-bhawal/ccw/commit/06c2cbd11aa3af3b5978130943dc4c8730b3912c))
+
 ## [0.1.2](https://github.com/bibaswan-bhawal/ccw/compare/v0.1.1...v0.1.2) (2026-05-28)
 
 
