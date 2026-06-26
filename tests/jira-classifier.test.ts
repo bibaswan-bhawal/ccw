@@ -132,7 +132,7 @@ describe('buildClassifierPrompt', () => {
 });
 
 describe('classifyDescriptionField', () => {
-  test('uses runner result when it picks a real field, then caches', () => {
+  test('uses runner result when it picks a real field, then caches', async () => {
     const issue = makeIssue({
       fields: {
         'Bug Description': { id: 'customfield_99001', name: 'Bug Description', text: 'crash' },
@@ -140,7 +140,7 @@ describe('classifyDescriptionField', () => {
     });
     const runner = vi.fn(() => '{"description_field": "Bug Description"}');
 
-    const first = classifyDescriptionField(issue, { project: 'PROJ', runner });
+    const first = await classifyDescriptionField(issue, { project: 'PROJ', runner });
     expect(first).toBe('Bug Description');
     expect(runner).toHaveBeenCalledTimes(1);
 
@@ -150,22 +150,30 @@ describe('classifyDescriptionField', () => {
     expect(cache.PROJ.Bug.description).toBe('Bug Description');
 
     // Second call hits cache, doesn't invoke runner
-    const second = classifyDescriptionField(issue, { project: 'PROJ', runner });
+    const second = await classifyDescriptionField(issue, { project: 'PROJ', runner });
     expect(second).toBe('Bug Description');
     expect(runner).toHaveBeenCalledTimes(1);
   });
 
-  test('force flag bypasses cache', () => {
+  test('force flag bypasses cache', async () => {
     const issue = makeIssue({
       fields: { Description: { id: 'description', name: 'Description', text: 'x' } },
     });
     const runner = vi.fn(() => '{"description_field": "Description"}');
-    classifyDescriptionField(issue, { project: 'PROJ', runner });
-    classifyDescriptionField(issue, { project: 'PROJ', runner, force: true });
+    await classifyDescriptionField(issue, { project: 'PROJ', runner });
+    await classifyDescriptionField(issue, { project: 'PROJ', runner, force: true });
     expect(runner).toHaveBeenCalledTimes(2);
   });
 
-  test('falls back to heuristic when runner returns garbage', () => {
+  test('awaits an async runner (the production claude -p path)', async () => {
+    const issue = makeIssue({
+      fields: { 'Bug Description': { id: 'customfield_99001', name: 'Bug Description', text: 'crash' } },
+    });
+    const runner = vi.fn(async () => '{"description_field": "Bug Description"}');
+    expect(await classifyDescriptionField(issue, { project: 'PROJ', runner })).toBe('Bug Description');
+  });
+
+  test('falls back to heuristic when runner returns garbage', async () => {
     const issue = makeIssue({
       fields: {
         Description: { id: 'description', name: 'Description', text: 'standard content' },
@@ -173,42 +181,42 @@ describe('classifyDescriptionField', () => {
       },
     });
     const runner = vi.fn(() => 'I have no idea what you mean.');
-    expect(classifyDescriptionField(issue, { project: 'PROJ', runner })).toBe('Description');
+    expect(await classifyDescriptionField(issue, { project: 'PROJ', runner })).toBe('Description');
   });
 
-  test('falls back to heuristic when runner returns a field that does not exist on the ticket', () => {
+  test('falls back to heuristic when runner returns a field that does not exist on the ticket', async () => {
     const issue = makeIssue({
       fields: { Description: { id: 'description', name: 'Description', text: 'ok' } },
     });
     const runner = vi.fn(() => '{"description_field": "Made Up Field"}');
-    expect(classifyDescriptionField(issue, { project: 'PROJ', runner })).toBe('Description');
+    expect(await classifyDescriptionField(issue, { project: 'PROJ', runner })).toBe('Description');
   });
 
-  test('falls back to heuristic when runner is unavailable (returns undefined)', () => {
+  test('falls back to heuristic when runner is unavailable (returns undefined)', async () => {
     const issue = makeIssue({
       fields: { 'Bug Description': { id: 'customfield_99001', name: 'Bug Description', text: 'crash' } },
     });
     const runner = vi.fn(() => undefined);
-    expect(classifyDescriptionField(issue, { project: 'PROJ', runner })).toBe('Bug Description');
+    expect(await classifyDescriptionField(issue, { project: 'PROJ', runner })).toBe('Bug Description');
   });
 
-  test('invalidates cache when the cached field is gone from the ticket', () => {
+  test('invalidates cache when the cached field is gone from the ticket', async () => {
     const issue1 = makeIssue({
       fields: { 'Bug Description': { id: 'customfield_99001', name: 'Bug Description', text: 'A' } },
     });
     const runner1 = vi.fn(() => '{"description_field": "Bug Description"}');
-    classifyDescriptionField(issue1, { project: 'PROJ', runner: runner1 });
+    await classifyDescriptionField(issue1, { project: 'PROJ', runner: runner1 });
 
     // New ticket where the cached field doesn't exist
     const issue2 = makeIssue({
       fields: { Description: { id: 'description', name: 'Description', text: 'B' } },
     });
     const runner2 = vi.fn(() => '{"description_field": "Description"}');
-    expect(classifyDescriptionField(issue2, { project: 'PROJ', runner: runner2 })).toBe('Description');
+    expect(await classifyDescriptionField(issue2, { project: 'PROJ', runner: runner2 })).toBe('Description');
     expect(runner2).toHaveBeenCalledTimes(1);
   });
 
-  test('caches by (project, ticketType) — Bugs and Stories get separate entries', () => {
+  test('caches by (project, ticketType) — Bugs and Stories get separate entries', async () => {
     const bug = makeIssue({
       issueType: 'Bug',
       fields: { 'Bug Description': { id: 'customfield_99001', name: 'Bug Description', text: 'b' } },
@@ -220,8 +228,8 @@ describe('classifyDescriptionField', () => {
     const runner = vi.fn((prompt: string) =>
       prompt.includes('Bug') ? '{"description_field": "Bug Description"}' : '{"description_field": "Description"}',
     );
-    expect(classifyDescriptionField(bug, { project: 'PROJ', runner })).toBe('Bug Description');
-    expect(classifyDescriptionField(story, { project: 'PROJ', runner })).toBe('Description');
+    expect(await classifyDescriptionField(bug, { project: 'PROJ', runner })).toBe('Bug Description');
+    expect(await classifyDescriptionField(story, { project: 'PROJ', runner })).toBe('Description');
     const cache = JSON.parse(readFileSync(cachePath(), 'utf-8'));
     expect(cache.PROJ.Bug.description).toBe('Bug Description');
     expect(cache.PROJ.Story.description).toBe('Description');

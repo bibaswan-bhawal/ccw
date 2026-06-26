@@ -85,7 +85,9 @@ const taskProvider: TaskProvider = {
     // type). Cached after the first lookup; subsequent fetches skip the LLM
     // call. If the classifier fails or claude -p is unavailable, falls back
     // to a heuristic — the plugin always produces useful context.
-    const descriptionField = config.project ? classifyDescriptionField(issue, { project: config.project }) : undefined;
+    const descriptionField = config.project
+      ? await classifyDescriptionField(issue, { project: config.project })
+      : undefined;
     const description = descriptionField ? (issue.fields[descriptionField]?.text ?? '') : '';
 
     return {

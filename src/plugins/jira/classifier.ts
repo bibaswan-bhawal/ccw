@@ -18,7 +18,6 @@
  * because of classifier issues; it just renders less smartly.
  */
 
-import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -118,18 +117,39 @@ export function parseClassifierResponse(stdout: string): string | undefined {
   return undefined;
 }
 
+/** Hard cap on the one-time classifier call, after which we kill it and fall back. */
+const CLASSIFIER_TIMEOUT_MS = 60_000;
+
 interface RunOptions {
-  /** Injected for tests. Real callers leave this unset; classifyDescriptionField defaults to claude -p. */
-  runner?: (prompt: string) => string | undefined;
+  /**
+   * Injected for tests. Real callers leave this unset; classifyDescriptionField
+   * defaults to `claude -p`. May be sync or async — the result is awaited.
+   */
+  runner?: (prompt: string) => string | undefined | Promise<string | undefined>;
 }
 
-function defaultRunner(prompt: string): string | undefined {
-  const result = spawnSync('claude', ['-p', prompt], {
-    encoding: 'utf-8',
-    timeout: 60_000,
+/**
+ * Run `claude -p` without blocking the event loop. The earlier spawnSync froze
+ * the calling spinner (Ink animates on the same loop) for the whole call — up
+ * to a minute on the first ticket of each (project, type). Bun.spawn keeps the
+ * UI responsive while we await the classification.
+ */
+async function defaultRunner(prompt: string): Promise<string | undefined> {
+  const proc = Bun.spawn(['claude', '-p', prompt], {
+    stdin: 'ignore',
+    stdout: 'pipe',
+    stderr: 'ignore',
   });
-  if (result.status !== 0) return undefined;
-  return result.stdout;
+  const timer = setTimeout(() => proc.kill(), CLASSIFIER_TIMEOUT_MS);
+  try {
+    const stdout = await new Response(proc.stdout).text();
+    const exitCode = await proc.exited;
+    return exitCode === 0 ? stdout : undefined;
+  } catch {
+    return undefined;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 export interface ClassifyOptions extends RunOptions {
@@ -144,7 +164,7 @@ export interface ClassifyOptions extends RunOptions {
  * Always returns a best guess: classifier result, then heuristic, then
  * undefined if neither finds anything plausible.
  */
-export function classifyDescriptionField(issue: JiraIssue, opts: ClassifyOptions): string | undefined {
+export async function classifyDescriptionField(issue: JiraIssue, opts: ClassifyOptions): Promise<string | undefined> {
   const cache = readCache();
   const projectCache = cache[opts.project] ?? {};
 
@@ -156,7 +176,7 @@ export function classifyDescriptionField(issue: JiraIssue, opts: ClassifyOptions
   }
 
   const runner = opts.runner ?? defaultRunner;
-  const stdout = runner(buildClassifierPrompt(issue));
+  const stdout = await runner(buildClassifierPrompt(issue));
   const fromLLM = stdout ? parseClassifierResponse(stdout) : undefined;
   const validated = fromLLM && issue.fields[fromLLM] ? fromLLM : heuristicDescriptionField(issue);
 
