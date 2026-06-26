@@ -48,6 +48,16 @@ export type UpdateChannel = 'stable' | 'prerelease' | 'none';
 const REPO_OWNER = 'bibaswan-bhawal';
 const REPO_NAME = 'ccw';
 const USER_AGENT = `ccw-update-check`;
+/**
+ * Cap each GitHub metadata request. `fetch` has no default timeout, so without
+ * this an unreachable / black-holed network would let the request hang
+ * indefinitely. That matters most for the launch-time background refresh, which
+ * isn't unref'd: the process can't exit until the request settles, so a hung
+ * fetch would stall quick scripting commands (`ccw config --get`, `ccw ls
+ * --pipe`). 5s is ample for a small JSON metadata call (the binary download
+ * lives elsewhere) and keeps the worst case bounded.
+ */
+const FETCH_TIMEOUT_MS = 5_000;
 
 function ccwDataDir(): string {
   return process.env.CCW_DATA_DIR && process.env.CCW_DATA_DIR.length > 0
@@ -106,6 +116,7 @@ async function fetchJson<T>(url: string): Promise<T | undefined> {
         'User-Agent': USER_AGENT,
         Accept: 'application/vnd.github+json',
       },
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
     });
     if (!response.ok) return undefined;
     return (await response.json()) as T;
