@@ -2,7 +2,7 @@
 // resolves under the Bun runtime. vitest is configured to exclude tests/bun/**.
 import { describe, expect, test } from 'bun:test';
 import { closeSync, readSync } from 'node:fs';
-import { isPtyAvailable, openPty, setWinsize, getWinsize } from '../../src/lib/pty/index.ts';
+import { isPtyAvailable, openPty, setWinsize, getWinsize, terminalSize } from '../../src/lib/pty/index.ts';
 
 describe('pty layer', () => {
   test('is available on this platform', () => {
@@ -30,6 +30,19 @@ describe('pty layer', () => {
       closeSync(pty.slave);
       closeSync(pty.master);
     }
+  });
+
+  test('terminalSize reads the authoritative size and nulls on a non-terminal fd', () => {
+    const pty = openPty(33, 111);
+    try {
+      // A real PTY fd reports its size...
+      expect(terminalSize(pty.master)).toEqual({ rows: 33, cols: 111 });
+    } finally {
+      closeSync(pty.slave);
+      closeSync(pty.master);
+    }
+    // ...and a non-terminal fd (e.g. a pipe) returns null rather than -1s.
+    expect(terminalSize(2_000_000_000)).toBeNull();
   });
 
   test('a child spawned on the slave sees a TTY and its output reaches the master', () => {
