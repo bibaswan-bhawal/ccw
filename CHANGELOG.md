@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.3.1](https://github.com/bibaswan-bhawal/ccw/compare/v0.3.0...v0.3.1) (2026-06-30)
+
+
+### Bug Fixes
+
+* **pty:** track terminal resizes via TIOCGWINSZ + poll backstop ([b095384](https://github.com/bibaswan-bhawal/ccw/commit/b095384a46ce4254b9a9a64622fa5aac6fc138fe))
+* self-update binary-target guards + PTY resize tracking ([faa8143](https://github.com/bibaswan-bhawal/ccw/commit/faa814331963ca22e17ff7736c155149c5ac7f96))
+* **update:** never self-update when running from source or under brew ([d54a27b](https://github.com/bibaswan-bhawal/ccw/commit/d54a27bc6a3c021f9c0339d43a10c76aef9a0016))
+
 ## [0.3.0](https://github.com/bibaswan-bhawal/ccw/compare/v0.2.1...v0.3.0) (2026-06-30)
 
 
