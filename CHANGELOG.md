@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.3.0](https://github.com/bibaswan-bhawal/ccw/compare/v0.2.1...v0.3.0) (2026-06-30)
+
+
+### Features
+
+* **claude:** run Claude in a PTY proxy with spawnSync fallback ([b65fda5](https://github.com/bibaswan-bhawal/ccw/commit/b65fda5200389017c1456425719b00531e64b714))
+* **claude:** run Claude in a PTY proxy with spawnSync fallback ([c6c723e](https://github.com/bibaswan-bhawal/ccw/commit/c6c723e15af34f8a65595ec3218904fe1ca8728f))
+
+
+### Documentation
+
+* capture PTY proxy design + feasibility findings ([0ad2fe8](https://github.com/bibaswan-bhawal/ccw/commit/0ad2fe89cf2ed8547ffe450e0b3d0f0722ea455d))
+
 ## [0.2.1](https://github.com/bibaswan-bhawal/ccw/compare/v0.2.0...v0.2.1) (2026-06-30)
 
 
