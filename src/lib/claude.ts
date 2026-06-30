@@ -1,3 +1,4 @@
+import { closeSync } from 'node:fs';
 import type { Task } from './plugin.ts';
 
 /**
@@ -36,9 +37,8 @@ ${task.claudeContext}`;
  * the init wizard). Ink puts process.stdin into raw mode and attaches a
  * pull-based `readable` listener to consume keystrokes, and Ink 7 defers part
  * of that teardown to a microtask. We detach any leftover listeners and leave
- * raw mode so the child starts from a clean terminal — but this alone is not
- * enough (see launchClaude): a paused JS stream doesn't stop Bun's native poll
- * on fd 0 while our event loop keeps spinning.
+ * raw mode so the child starts from a clean terminal — without this, the
+ * synchronous fallback below inherits a dirty stdin.
  */
 export function relinquishStdin(stdin: NodeJS.ReadStream = process.stdin): void {
   if (!stdin.isTTY) return;
@@ -54,23 +54,66 @@ export function relinquishStdin(stdin: NodeJS.ReadStream = process.stdin): void 
 }
 
 /**
- * Launch Claude and block until it exits.
+ * Launch Claude, preferring a PTY proxy and falling back to a synchronous spawn.
  *
- * We spawn *synchronously* on purpose. With async spawn + `await proc.exited`,
- * ccw's event loop keeps running for the entire Claude session, and Bun's
- * process.stdin (a TTY handle on fd 0) keeps a native poll on that fd alive
- * even when the JS stream is paused. Since the inherited `claude` reads the
- * same fd 0, the two readers race and the kernel occasionally hands a byte to
- * ccw instead of Claude — silently dropped, surfacing as an input box that
- * intermittently misses keystrokes. Running `claude` directly has no such
- * parent, which is why it never reproduces there.
+ * **PTY path** (default on interactive terminals): Claude runs on a PTY slave
+ * while ccw proxies the real terminal to/from the master. Claude never reads
+ * ccw's fd 0, so there's no shared-fd contention (no dropped keystrokes), and
+ * ccw's event loop stays alive — which a future background-task supervisor
+ * needs. Resize is forwarded via a TinyCC-compiled ioctl wrapper (see pty/).
  *
- * spawnSync blocks this thread in the syscall for the whole session, so our
- * event loop never spins and never polls fd 0 — Claude gets uncontested
- * ownership of the terminal. ccw does no work while Claude runs (both call
- * sites just exit afterward), so blocking is free.
+ * **Fallback** (non-TTY, opt-out via CCW_NO_PTY, or any PTY init failure on an
+ * untested platform): spawn synchronously. With async spawn + `await`, ccw's
+ * event loop would keep a native poll alive on the inherited fd 0, racing the
+ * child for input — intermittently dropped keystrokes. spawnSync blocks this
+ * thread for the whole session so the child owns the terminal uncontested. ccw
+ * does no work while Claude runs, so blocking is free.
  */
-export function launchClaude(args: string[], cwd: string): number {
+export async function launchClaude(args: string[], cwd: string): Promise<number> {
+  // The PTY modules import bun:ffi, which only resolves under the Bun runtime.
+  // Load them dynamically so non-Bun tooling (e.g. the vitest test runner) can
+  // import this file without pulling in bun:ffi.
+  const ptyLib = await loadPtyLib();
+  if (ptyLib) {
+    let pty: { master: number; slave: number } | null = null;
+    try {
+      pty = ptyLib.openPty(process.stdout.rows ?? 24, process.stdout.columns ?? 80);
+    } catch {
+      pty = null; // PTY layer unavailable on this platform → fall back
+    }
+    if (pty) {
+      try {
+        const { runClaudeInPty } = await import('./pty/proxy.ts');
+        return await runClaudeInPty(pty, args, cwd);
+      } catch {
+        // Bun.spawn threw before Claude started; clean up and fall back.
+        // (Errors *during* the session are handled inside the proxy, so this
+        // can't double-spawn a running Claude.)
+        for (const fd of [pty.master, pty.slave]) {
+          try {
+            closeSync(fd);
+          } catch {
+            /* already closed */
+          }
+        }
+      }
+    }
+  }
+  return launchClaudeSync(args, cwd);
+}
+
+async function loadPtyLib(): Promise<typeof import('./pty/index.ts') | null> {
+  if (process.env.CCW_NO_PTY) return null;
+  if (!process.stdin.isTTY || !process.stdout.isTTY) return null;
+  try {
+    const lib = await import('./pty/index.ts');
+    return lib.isPtyAvailable() ? lib : null;
+  } catch {
+    return null;
+  }
+}
+
+function launchClaudeSync(args: string[], cwd: string): number {
   relinquishStdin();
   const result = Bun.spawnSync(['claude', ...args], {
     cwd,

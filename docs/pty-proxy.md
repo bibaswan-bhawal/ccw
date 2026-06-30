@@ -1,6 +1,41 @@
 # PTY proxy — design notes & feasibility findings
 
-Status: **investigation complete, implementation paused on a portability blocker.**
+Status: **implemented behind a fallback; pending interactive validation on real
+terminals + non-macOS-arm64 platforms.**
+
+## Implementation
+
+- `src/lib/pty/winsize.c` — header-free TinyCC source: non-variadic
+  `ccw_set_winsize`/`ccw_get_rows`/`ccw_get_cols` wrapping the variadic `ioctl`.
+- `src/lib/pty/index.ts` — `dlopen(openpty)` + extract the embedded `winsize.c`
+  to a temp path and `cc()`-compile it. `isPtyAvailable()`, `openPty()`,
+  `setWinsize()`. All best-effort; any failure → `isPtyAvailable() === false`.
+- `src/lib/pty/proxy.ts` — `runClaudeInPty()`: spawn Claude on the slave, raw
+  the real terminal, `createReadStream(master) → stdout`, `stdin → writeSync(master)`,
+  `SIGWINCH → setWinsize`, restore + close on exit.
+- `src/lib/claude.ts` — `launchClaude()` dynamically imports the PTY layer
+  (keeps `bun:ffi` out of the vitest path), uses it when both stdio are TTYs and
+  `CCW_NO_PTY` is unset, and falls back to the synchronous `spawnSync` otherwise
+  or on any PTY init failure. PTY allocation happens before spawn, so a failure
+  can never double-spawn Claude.
+- Tests: `tests/bun/pty.test.ts` runs under `bun test` (the layer needs the Bun
+  runtime); vitest excludes `tests/bun/**`. `npm test` runs both.
+
+Opt out at runtime with `CCW_NO_PTY=1`.
+
+### Validated
+
+- Compiled-binary path: embed → extract-to-temp → `cc` → ioctl works in a
+  `bun build --compile` binary on macOS arm64 (set 24×80, read back 24/80).
+- `bun test`: openpty alloc, winsize set/get roundtrip, resize, child-on-slave
+  sees a TTY and its output reaches the master.
+
+### NOT yet validated (needs a human at a real terminal)
+
+- End-to-end interactive session: keystroke fidelity, paste, Ctrl-C, mid-session
+  resize redraw, exit/restore.
+- TinyCC + openpty on Linux x64 and macOS x64 (only arm64-darwin tested here).
+  The `spawnSync` fallback covers failures, but post-init glitches need eyes.
 
 ## Goal
 
@@ -23,9 +58,9 @@ All proven with throwaway probes:
    dlopen of a system lib, no addon). Lib: `libSystem.B.dylib` on macOS,
    `libutil.so.1` on Linux.
 2. **Child sees a TTY**: `Bun.spawn(['claude', ...], { stdin: slave, stdout:
-   slave, stderr: slave })` — `test -t 1` returns true in the child.
+slave, stderr: slave })` — `test -t 1` returns true in the child.
 3. **Async master reads**: `fs.createReadStream(null, { fd: master, autoClose:
-   false })` streams child output live under Bun. (`net.Socket({fd})` reads
+false })` streams child output live under Bun. (`net.Socket({fd})` reads
    nothing; `Bun.file(fd).stream()` returns empty — it stats a char device as
    size 0. Both dead ends.)
 4. **Master writes** (forward keystrokes): `fs.writeSync(master, chunk)` works.
@@ -54,27 +89,22 @@ Escapes evaluated:
 Without resize, a PTY proxy is a **regression** vs `spawnSync` (where Claude
 holds the real terminal and resize works natively), so resize is mandatory.
 
-## Remaining path to ship it
+## How the blocker was solved (no native dylibs needed)
 
-Prebuilt per-arch native helper:
+The key realization: the `cc` failure in a compiled binary was _only_ the source
+path. TinyCC itself **is bundled** in the compiled binary and runs — it just
+couldn't read the embedded `/$bunfs/` path. So:
 
-1. Compile `ccw-pty-{macos-arm64,macos-x64,linux-x64}.{dylib,so}` in CI (CI has
-   real compilers) exposing non-variadic `ccw_set_winsize`.
-2. Embed each via `import ... with { type: 'file' }`; at runtime read the
-   embedded bytes (Bun's file API _does_ work on embedded assets in compiled
-   binaries, unlike TinyCC), write to a temp path, `dlopen` it.
-3. Initial size still comes from `openpty`'s `winp` arg (non-variadic, FFI-safe)
-   so first paint is correct even before the dylib loads.
+1. Embed `winsize.c` via `import ... with { type: 'file' }`.
+2. At runtime, read the embedded source with Bun's fs API (which _does_ work on
+   embedded assets) and write it to a real temp file.
+3. `cc({ source: tempPath })` — TinyCC compiles from the real path and emits a
+   correct variadic `ioctl` call on every arch, including arm64-darwin.
 
-Cost: 3 build targets, larger binary, extract-and-dlopen at startup, temp
-cleanup, and validation that an extracted unsigned dylib loads cleanly under the
-brew-distributed (minisign/Sigstore, not Apple-notarized) binary.
+Verified end-to-end in an actual `bun build --compile` binary (set 24×80 → read
+back 24/80). This removes the entire prebuilt-per-arch-dylib path: no extra CI
+build targets, no macOS runners, no extract-and-`dlopen`, no signing concerns.
 
-## Recommendation
-
-Pause here. The user-facing keystroke bug is already fixed and shipped (0.2.1).
-The PTY proxy is infrastructure for the not-yet-started background-task feature,
-and the clean portable path is blocked by current Bun limitations. Resume this
-when background-task work actually begins — and re-check whether Bun has gained
-variadic FFI or `cc`-in-compiled-binary support by then, which would collapse
-the native-dylib step entirely.
+If TinyCC or openpty ever fails on some platform, `isPtyAvailable()` returns
+false and `launchClaude` falls back to the synchronous `spawnSync` — so the
+worst case is "no PTY there," never a crash or regression.
