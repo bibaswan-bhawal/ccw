@@ -30,22 +30,15 @@ ${task.claudeContext}`;
 }
 
 /**
- * Fully hand the controlling TTY to the child before spawning it.
+ * Reset stdin to a clean state before handing the terminal to the child.
  *
  * Before launching Claude, ccw renders interactive Ink UI (spinners, pickers,
  * the init wizard). Ink puts process.stdin into raw mode and attaches a
  * pull-based `readable` listener to consume keystrokes, and Ink 7 defers part
- * of that teardown to a microtask. Under Bun, remnants of that input handling
- * can survive into the child's lifetime — so the parent (ccw) and the
- * inherited `claude` process both read from the same TTY fd. The kernel splits
- * incoming bytes between the two readers, and the ones the parent grabs are
- * silently dropped. The user sees a laggy input box that misses keystrokes.
- *
- * Running `claude` directly has no such parent, which is why it never repros.
- *
- * We are the boundary that hands the terminal to the child, so stop owning
- * stdin here: detach any leftover listeners, leave raw mode, and pause the
- * stream. ccw exits as soon as the child does, so we never need it back.
+ * of that teardown to a microtask. We detach any leftover listeners and leave
+ * raw mode so the child starts from a clean terminal — but this alone is not
+ * enough (see launchClaude): a paused JS stream doesn't stop Bun's native poll
+ * on fd 0 while our event loop keeps spinning.
  */
 export function relinquishStdin(stdin: NodeJS.ReadStream = process.stdin): void {
   if (!stdin.isTTY) return;
@@ -60,13 +53,30 @@ export function relinquishStdin(stdin: NodeJS.ReadStream = process.stdin): void 
   }
 }
 
-export async function launchClaude(args: string[], cwd: string): Promise<number> {
+/**
+ * Launch Claude and block until it exits.
+ *
+ * We spawn *synchronously* on purpose. With async spawn + `await proc.exited`,
+ * ccw's event loop keeps running for the entire Claude session, and Bun's
+ * process.stdin (a TTY handle on fd 0) keeps a native poll on that fd alive
+ * even when the JS stream is paused. Since the inherited `claude` reads the
+ * same fd 0, the two readers race and the kernel occasionally hands a byte to
+ * ccw instead of Claude — silently dropped, surfacing as an input box that
+ * intermittently misses keystrokes. Running `claude` directly has no such
+ * parent, which is why it never reproduces there.
+ *
+ * spawnSync blocks this thread in the syscall for the whole session, so our
+ * event loop never spins and never polls fd 0 — Claude gets uncontested
+ * ownership of the terminal. ccw does no work while Claude runs (both call
+ * sites just exit afterward), so blocking is free.
+ */
+export function launchClaude(args: string[], cwd: string): number {
   relinquishStdin();
-  const proc = Bun.spawn(['claude', ...args], {
+  const result = Bun.spawnSync(['claude', ...args], {
     cwd,
     stdin: 'inherit',
     stdout: 'inherit',
     stderr: 'inherit',
   });
-  return await proc.exited;
+  return result.exitCode ?? 0;
 }

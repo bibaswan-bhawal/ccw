@@ -70,7 +70,7 @@ export async function runCreate(featureName: string): Promise<void> {
 
   ui.info(`Starting Claude Code in ${ui.cyan(targetDir)}`);
   ui.blank();
-  const exitCode = await launchClaude(claudeArgs, targetDir);
+  const exitCode = launchClaude(claudeArgs, targetDir);
   process.exit(exitCode);
 }
 
@@ -89,7 +89,7 @@ async function resumeWorktree(
   if (existingSessionId) {
     ui.success(`Resuming Claude Code session ${ui.dim(existingSessionId)}`);
     ui.blank();
-    const exitCode = await launchClaude(['--resume', existingSessionId], targetDir);
+    const exitCode = launchClaude(['--resume', existingSessionId], targetDir);
     process.exit(exitCode);
   }
 
@@ -111,7 +111,7 @@ async function resumeWorktree(
   }
 
   ui.blank();
-  const exitCode = await launchClaude(claudeArgs, targetDir);
+  const exitCode = launchClaude(claudeArgs, targetDir);
   process.exit(exitCode);
 }
 

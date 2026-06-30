@@ -113,13 +113,13 @@ async function pickAndLaunch(cfg: ResolvedConfig, host: PluginHost, entries: Wor
   if (sessionId) {
     ui.success(`Resuming Claude Code session ${ui.dim(sessionId)}`);
     ui.blank();
-    const exitCode = await launchClaude(['--resume', sessionId], targetDir);
+    const exitCode = launchClaude(['--resume', sessionId], targetDir);
     process.exit(exitCode);
   }
 
   ui.warn('No saved session for this worktree; starting Claude Code without resume.');
   ui.blank();
-  const exitCode = await launchClaude([], targetDir);
+  const exitCode = launchClaude([], targetDir);
   process.exit(exitCode);
 }
 
