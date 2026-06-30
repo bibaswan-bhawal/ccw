@@ -20,12 +20,13 @@
  */
 
 import { createHash } from 'node:crypto';
+import { basename } from 'node:path';
 import pkg from '../../package.json' with { type: 'json' };
 import { hasAvailableUpdate, runCheck, type ReleaseInfo } from '../lib/update/check.ts';
 import { fetchAttestationBundle, fetchBuffer, fetchText, FetchError } from '../lib/update/fetch.ts';
 import { installBinary, InstallError } from '../lib/update/install.ts';
 import { MinisignError, parseSignature, verifyMinisign } from '../lib/update/minisign.ts';
-import { currentPlatformAsset, isBrewInstall } from '../lib/update/platform.ts';
+import { currentPlatformAsset, isBrewInstall, isRunningFromSource } from '../lib/update/platform.ts';
 import { AttestationError, verifyAttestation } from '../lib/update/sigstore.ts';
 import { getReleasePublicKey } from '../lib/update/signing-key.ts';
 import { loadSettings } from '../lib/settings/store.ts';
@@ -69,6 +70,17 @@ export async function runUpdate(opts: UpdateOptions): Promise<void> {
   ui.info(`ccw ${ui.bold(available.release.tag)} is available (current: v${currentVersion}).`);
 
   if (opts.check) return;
+
+  // Never self-update when running from source: process.execPath is the JS
+  // runtime (e.g. bun via the dev wrapper), and installing over it would
+  // destroy the user's runtime rather than ccw.
+  if (isRunningFromSource()) {
+    ui.blank();
+    ui.error('`ccw update` can only update an installed ccw binary.');
+    ui.hint(`You're running ccw from source via ${ui.bold(basename(process.execPath))}.`);
+    ui.hint('Update with `git pull` and rebuild instead.');
+    return;
+  }
 
   if (isBrewInstall()) {
     ui.blank();
