@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1](https://github.com/bibaswan-bhawal/ccw/compare/v0.2.0...v0.2.1) (2026-06-30)
+
+
+### Bug Fixes
+
+* **claude:** spawn Claude synchronously to stop dropped keystrokes ([4f5a7a3](https://github.com/bibaswan-bhawal/ccw/commit/4f5a7a3ec5647e95f2e793e6e77d07bf496853f6))
+
 ## [0.2.0](https://github.com/bibaswan-bhawal/ccw/compare/v0.1.2...v0.2.0) (2026-06-26)
 
 
