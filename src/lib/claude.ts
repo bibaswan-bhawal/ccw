@@ -77,7 +77,12 @@ export async function launchClaude(args: string[], cwd: string): Promise<number>
   if (ptyLib) {
     let pty: { master: number; slave: number } | null = null;
     try {
-      pty = ptyLib.openPty(process.stdout.rows ?? 24, process.stdout.columns ?? 80);
+      const termFd = typeof process.stdout.fd === 'number' ? process.stdout.fd : 1;
+      const size = ptyLib.terminalSize(termFd) ?? {
+        rows: process.stdout.rows ?? 24,
+        cols: process.stdout.columns ?? 80,
+      };
+      pty = ptyLib.openPty(size.rows, size.cols);
     } catch {
       pty = null; // PTY layer unavailable on this platform → fall back
     }

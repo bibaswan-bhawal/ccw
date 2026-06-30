@@ -10,7 +10,12 @@
  * supervisor needs (the synchronous fallback freezes it for the session).
  */
 import { closeSync, createReadStream, writeSync } from 'node:fs';
-import { setWinsize, type Pty } from './index.ts';
+import { setWinsize, terminalSize, type Pty } from './index.ts';
+
+// Poll interval for the resize backstop. SIGWINCH handles the common case
+// instantly; this catches terminals that resize the grid without delivering
+// SIGWINCH (e.g. Warp toggling its side panel). Cheap: two ioctls per tick.
+const RESIZE_POLL_MS = 500;
 
 export async function runClaudeInPty(pty: Pty, args: string[], cwd: string): Promise<number> {
   // Spawn first; if this throws, the caller cleans up the PTY and falls back.
@@ -57,11 +62,23 @@ export async function runClaudeInPty(pty: Pty, args: string[], cwd: string): Pro
   };
   stdin.on('data', onInput);
 
-  // terminal resize -> PTY
-  const onResize = (): void => {
-    setWinsize(pty.master, stdout.rows ?? 24, stdout.columns ?? 80);
+  // terminal resize -> PTY. Read the real terminal's size straight from the fd
+  // (TIOCGWINSZ) rather than process.stdout.columns/rows, which Bun caches and
+  // refreshes inconsistently. Only push when it actually changes, so we don't
+  // spam Claude with redundant SIGWINCHs.
+  const termFd = typeof stdout.fd === 'number' ? stdout.fd : 1;
+  let lastRows = 0;
+  let lastCols = 0;
+  const syncWinsize = (): void => {
+    const size = terminalSize(termFd) ?? { rows: stdout.rows ?? 24, cols: stdout.columns ?? 80 };
+    if (size.rows === lastRows && size.cols === lastCols) return;
+    lastRows = size.rows;
+    lastCols = size.cols;
+    setWinsize(pty.master, size.rows, size.cols);
   };
-  process.on('SIGWINCH', onResize);
+  process.on('SIGWINCH', syncWinsize);
+  // Backstop for terminals that change the grid without sending SIGWINCH.
+  const resizePoll = setInterval(syncWinsize, RESIZE_POLL_MS);
 
   let exitCode = 0;
   try {
@@ -74,7 +91,8 @@ export async function runClaudeInPty(pty: Pty, args: string[], cwd: string): Pro
       new Promise<void>((resolve) => setTimeout(resolve, 200)),
     ]);
   } finally {
-    process.removeListener('SIGWINCH', onResize);
+    clearInterval(resizePoll);
+    process.removeListener('SIGWINCH', syncWinsize);
     stdin.removeListener('data', onInput);
     masterRead.destroy();
     try {

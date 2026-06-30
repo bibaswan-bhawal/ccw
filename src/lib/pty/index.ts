@@ -108,9 +108,25 @@ export function setWinsize(fd: number, rows: number, cols: number): boolean {
   return n.setWinsize(fd, Math.max(1, rows | 0), Math.max(1, cols | 0)) === 0;
 }
 
-/** Test-only: read back a PTY's configured size. */
+/** Test-only: read back a PTY's configured size (raw, may contain -1 on error). */
 export function getWinsize(fd: number): { rows: number; cols: number } | null {
   const n = initNative();
   if (!n) return null;
   return { rows: n.getRows(fd), cols: n.getCols(fd) };
+}
+
+/**
+ * Read a terminal's *current* size straight from the kernel via TIOCGWINSZ.
+ * This is the authoritative size — unlike process.stdout.columns/rows, which is
+ * a cached value Bun refreshes inconsistently (e.g. it can miss a Warp side-
+ * panel toggle that changes the grid without a window resize). Returns null if
+ * unavailable or the fd isn't a sized terminal.
+ */
+export function terminalSize(fd: number): { rows: number; cols: number } | null {
+  const n = initNative();
+  if (!n) return null;
+  const rows = n.getRows(fd);
+  const cols = n.getCols(fd);
+  if (rows <= 0 || cols <= 0) return null;
+  return { rows, cols };
 }
