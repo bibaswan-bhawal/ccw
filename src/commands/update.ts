@@ -82,11 +82,23 @@ export async function runUpdate(opts: UpdateOptions): Promise<void> {
     return;
   }
 
+  // Homebrew-managed install: drive brew rather than overwriting the Cellar
+  // binary in place (that would desync brew's bookkeeping and can trip
+  // Gatekeeper). This keeps `ccw update` a single command that works
+  // everywhere, while brew stays the source of truth.
   if (isBrewInstall()) {
     ui.blank();
-    ui.info('This ccw was installed via Homebrew.');
-    ui.hint(`Run: ${ui.bold('brew upgrade ccw')}`);
-    return;
+    ui.info('Homebrew-managed install — upgrading via Homebrew...');
+    ui.blank();
+    const code = runBrewUpgrade();
+    ui.blank();
+    if (code === 0) {
+      ui.success(`Upgraded to ${ui.bold(available.release.tag)} via Homebrew.`);
+    } else {
+      ui.error('brew upgrade failed.');
+      ui.hint('Try manually: brew update && brew upgrade ccw');
+    }
+    process.exit(code);
   }
 
   const release = available.release;
@@ -181,6 +193,28 @@ export async function runUpdate(opts: UpdateOptions): Promise<void> {
 
   ui.blank();
   ui.success(`Updated to ${ui.bold(release.tag)}.`);
+}
+
+/**
+ * Run `brew upgrade ccw`, forcing a tap refresh first. Homebrew throttles its
+ * auto-update to ~24h by default, so a just-published release is often invisible
+ * to a plain `brew upgrade` (it reuses the stale local formula). Setting
+ * HOMEBREW_AUTO_UPDATE_SECS=0 makes brew sync taps before upgrading. Returns the
+ * brew exit code (or 1 if brew couldn't be spawned).
+ */
+function runBrewUpgrade(): number {
+  try {
+    const result = Bun.spawnSync(['brew', 'upgrade', 'ccw'], {
+      env: { ...process.env, HOMEBREW_AUTO_UPDATE_SECS: '0' },
+      stdin: 'inherit',
+      stdout: 'inherit',
+      stderr: 'inherit',
+    });
+    return result.exitCode ?? (result.success ? 0 : 1);
+  } catch {
+    // brew not found / failed to spawn
+    return 1;
+  }
 }
 
 function findAsset(release: ReleaseInfo, name: string): ReleaseInfo['assets'][number] {
