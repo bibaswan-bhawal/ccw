@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.3.2](https://github.com/bibaswan-bhawal/ccw/compare/v0.3.1...v0.3.2) (2026-07-01)
+
+
+### Bug Fixes
+
+* **pty:** signal Claude on resize so single resizes (Warp panel toggle) reflow ([1f8d936](https://github.com/bibaswan-bhawal/ccw/commit/1f8d936c1aa679340c847b25b6d5cfea7f0a1895))
+* **pty:** signal Claude on resize so single resizes reflow ([921b7ec](https://github.com/bibaswan-bhawal/ccw/commit/921b7ec93dcd448b8f9638eb91997babe127c013))
+
 ## [0.3.1](https://github.com/bibaswan-bhawal/ccw/compare/v0.3.0...v0.3.1) (2026-06-30)
 
 
