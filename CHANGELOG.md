@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.4.0](https://github.com/bibaswan-bhawal/ccw/compare/v0.3.2...v0.4.0) (2026-07-01)
+
+
+### Features
+
+* **update:** drive brew upgrade for Homebrew installs ([f05166f](https://github.com/bibaswan-bhawal/ccw/commit/f05166ff74cbb9512d7b4ad82200d081de6fc44a))
+* **update:** make ccw update drive brew upgrade for Homebrew installs ([c220cfd](https://github.com/bibaswan-bhawal/ccw/commit/c220cfdac2567cbbe2ec9b3d258eb4d812ebc932))
+
 ## [0.3.2](https://github.com/bibaswan-bhawal/ccw/compare/v0.3.1...v0.3.2) (2026-07-01)
 
 
