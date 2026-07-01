@@ -9,13 +9,25 @@
  * live event loop is the whole point: it's what a future background-task
  * supervisor needs (the synchronous fallback freezes it for the session).
  */
-import { closeSync, createReadStream, writeSync } from 'node:fs';
+import { appendFileSync, closeSync, createReadStream, writeSync } from 'node:fs';
 import { setWinsize, terminalSize, type Pty } from './index.ts';
 
 // Poll interval for the resize backstop. SIGWINCH handles the common case
 // instantly; this catches terminals that resize the grid without delivering
 // SIGWINCH (e.g. Warp toggling its side panel). Cheap: two ioctls per tick.
 const RESIZE_POLL_MS = 500;
+
+// Set CCW_PTY_DEBUG=/path/to/log to trace resize handling. Off by default; must
+// go to a file, never stdout (that's the live terminal the child is drawing to).
+const debug: (msg: string) => void = process.env.CCW_PTY_DEBUG
+  ? (msg) => {
+      try {
+        appendFileSync(process.env.CCW_PTY_DEBUG as string, `${new Date().toISOString()} ${msg}\n`);
+      } catch {
+        /* debug logging is best-effort */
+      }
+    }
+  : () => {};
 
 export async function runClaudeInPty(pty: Pty, args: string[], cwd: string): Promise<number> {
   // Spawn first; if this throws, the caller cleans up the PTY and falls back.
@@ -69,16 +81,30 @@ export async function runClaudeInPty(pty: Pty, args: string[], cwd: string): Pro
   const termFd = typeof stdout.fd === 'number' ? stdout.fd : 1;
   let lastRows = 0;
   let lastCols = 0;
-  const syncWinsize = (): void => {
+  const syncWinsize = (source: string): void => {
     const size = terminalSize(termFd) ?? { rows: stdout.rows ?? 24, cols: stdout.columns ?? 80 };
     if (size.rows === lastRows && size.cols === lastCols) return;
     lastRows = size.rows;
     lastCols = size.cols;
     setWinsize(pty.master, size.rows, size.cols);
+    // Setting the master's winsize only delivers SIGWINCH to the slave's
+    // controlling process group. Claude was spawned without being made the
+    // slave's session/controlling terminal, so that automatic signal never
+    // reaches it — which is why a single resize (e.g. a Warp panel toggle)
+    // doesn't reflow, while a drag's flood of terminal SIGWINCHs eventually
+    // does. Signal Claude explicitly so it re-reads its size every time.
+    if (proc.pid) {
+      try {
+        process.kill(proc.pid, 'SIGWINCH');
+      } catch {
+        /* child already gone */
+      }
+    }
+    debug(`resize(${source}) -> ${size.cols}x${size.rows} -> pid ${proc.pid}`);
   };
-  process.on('SIGWINCH', syncWinsize);
+  process.on('SIGWINCH', () => syncWinsize('sigwinch'));
   // Backstop for terminals that change the grid without sending SIGWINCH.
-  const resizePoll = setInterval(syncWinsize, RESIZE_POLL_MS);
+  const resizePoll = setInterval(() => syncWinsize('poll'), RESIZE_POLL_MS);
 
   let exitCode = 0;
   try {
