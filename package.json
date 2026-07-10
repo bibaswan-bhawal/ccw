@@ -1,6 +1,6 @@
 {
   "name": "ccw",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Claude Code Worktree — manage git worktrees with persistent Claude Code sessions and Jira integration",
   "type": "module",
   "private": false,

@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.5.0](https://github.com/bibaswan-bhawal/ccw/compare/v0.4.0...v0.5.0) (2026-07-10)
+
+
+### Features
+
+* name Claude sessions after the worktree feature name ([0de01ff](https://github.com/bibaswan-bhawal/ccw/commit/0de01ff628dc57ea8cb59c839818e93ca869b51c))
+* name Claude sessions after the worktree feature name ([2147d14](https://github.com/bibaswan-bhawal/ccw/commit/2147d1463427dae6d2602ea6f333f0c3f93a5ec4))
+
 ## [0.4.0](https://github.com/bibaswan-bhawal/ccw/compare/v0.3.2...v0.4.0) (2026-07-01)
 
 
