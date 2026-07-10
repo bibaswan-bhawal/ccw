@@ -42,7 +42,7 @@ export async function runCreate(featureName: string): Promise<void> {
   saveSessionId(cfg.sessionsFile, featureName, sessionId);
   ui.step(`Session ${ui.dim(sessionId)} saved for ${featureName}`);
 
-  const claudeArgs = ['--session-id', sessionId];
+  const claudeArgs = ['--session-id', sessionId, '--name', featureName];
 
   const detected = host.detectTask(featureName);
   if (detected) {
@@ -89,7 +89,7 @@ async function resumeWorktree(
   if (existingSessionId) {
     ui.success(`Resuming Claude Code session ${ui.dim(existingSessionId)}`);
     ui.blank();
-    const exitCode = await launchClaude(['--resume', existingSessionId], targetDir);
+    const exitCode = await launchClaude(['--resume', existingSessionId, '--name', featureName], targetDir);
     process.exit(exitCode);
   }
 
@@ -97,7 +97,7 @@ async function resumeWorktree(
   const sessionId = generateSessionId();
   saveSessionId(cfg.sessionsFile, featureName, sessionId);
 
-  const claudeArgs = ['--session-id', sessionId];
+  const claudeArgs = ['--session-id', sessionId, '--name', featureName];
   const detected = host.detectTask(featureName);
   if (detected) {
     const { task } = await tryFetchTask(host, detected.plugin, detected.key);
