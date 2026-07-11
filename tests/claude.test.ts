@@ -1,5 +1,5 @@
 import { describe, expect, test, vi } from 'vitest';
-import { relinquishStdin } from '../src/lib/claude.ts';
+import { buildEnvironmentSystemPrompt, combineSystemPrompts, relinquishStdin } from '../src/lib/claude.ts';
 
 function fakeTty(isTTY: boolean) {
   return {
@@ -40,5 +40,25 @@ describe('relinquishStdin', () => {
       pause: vi.fn(),
     };
     expect(() => relinquishStdin(stdin as unknown as NodeJS.ReadStream)).not.toThrow();
+  });
+});
+
+describe('buildEnvironmentSystemPrompt', () => {
+  test('mentions status, logs, restart commands and the log path', () => {
+    const prompt = buildEnvironmentSystemPrompt('/home/u/.ccw/repos/x/env/feat-a/env.log');
+    expect(prompt).toContain('ccw env status --json');
+    expect(prompt).toContain('ccw env logs');
+    expect(prompt).toContain('ccw env restart');
+    expect(prompt).toContain('/home/u/.ccw/repos/x/env/feat-a/env.log');
+    expect(prompt).toContain('Verify the environment is ready');
+  });
+});
+
+describe('combineSystemPrompts', () => {
+  test('joins non-empty sections with a blank line', () => {
+    expect(combineSystemPrompts(['a', undefined, 'b'])).toBe('a\n\nb');
+  });
+  test('returns undefined when nothing to combine', () => {
+    expect(combineSystemPrompts([undefined, ''])).toBeUndefined();
   });
 });

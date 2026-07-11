@@ -69,6 +69,7 @@ ccw rm PROJ-123-add-new-thing
 | `ccw <feature>`    | Create worktree + start Claude Code (resumes if exists)              |
 | `ccw ls`           | List active worktrees                                                |
 | `ccw rm [feature]` | Remove a worktree and its session                                    |
+| `ccw env <sub>`    | Manage the worktree's dev environment                                |
 | `ccw config`       | Edit global ccw settings (interactive; supports `--get`/`--set`)     |
 | `ccw update`       | Self-update to the latest release; skips when installed via Homebrew |
 
@@ -107,6 +108,53 @@ Environment variables override the config file:
 | `CCW_BASE_BRANCH`  | Base branch for new worktrees                      |
 
 Plugins may add their own env vars; see each plugin's README.
+
+## Isolated environments
+
+Give ccw hook scripts and every worktree gets its own running dev environment:
+started in the background when you open the worktree, visible to Claude
+(`ccw env status`), and torn down when your last session exits.
+
+```
+your-repo/.ccw/hooks/
+  env-setup    # once per worktree: copy .env, install deps (blocking)
+  env-start    # start the environment (foreground process or self-daemonizing)
+  env-stop     # graceful teardown (optional if env-start runs in the foreground)
+  env-status   # print JSON state: {"ready": true, "services": [...]} (optional)
+```
+
+Hooks receive: `CCW_WORKTREE_PATH`, `CCW_WORKTREE_NAME`, `CCW_GIT_ROOT`,
+`CCW_ENV_DIR` (scratch dir), and `CCW_WORKTREE_SLOT` — a stable small integer
+unique per worktree. Use the slot to avoid collisions between parallel
+worktrees: ports (`$((3000 + CCW_WORKTREE_SLOT))`), emulator pools,
+`COMPOSE_PROJECT_NAME=app-$CCW_WORKTREE_SLOT`, scratch database names.
+
+Example `env-start` for a web app:
+
+```sh
+#!/bin/sh
+cp "$CCW_GIT_ROOT/.env" .env 2>/dev/null || true
+PORT=$((3000 + CCW_WORKTREE_SLOT)) exec bin/dev
+```
+
+| Command           | Description                                    |
+| ----------------- | ---------------------------------------------- |
+| `ccw env status`  | State, readiness, services (`--json` for CI)   |
+| `ccw env logs`    | Environment log (`-n`/`--lines` count, `-f` to follow) |
+| `ccw env start`   | Start (runs setup first if needed)             |
+| `ccw env stop`    | Stop now                                       |
+| `ccw env restart` | The "I broke it" recovery loop                 |
+
+Can't commit files to the repo? Put the same hooks in
+`~/.ccw/repos/<encoded-git-root>/hooks/` instead — in-tree wins when both exist.
+Optional: set `environment.ready_pattern` in the repo config to a regex that,
+when it appears in the log, marks the environment ready.
+
+> **Security note:** env hooks are arbitrary code, committed to the repo like
+> any other file. ccw executes them automatically the moment you run
+> `ccw <feature>` on a worktree — there is no prompt or sandbox. Review
+> `.ccw/hooks/` before opening worktrees on a repo you don't fully trust,
+> the same way you'd review a `postinstall` script or a Makefile.
 
 ## Plugins
 

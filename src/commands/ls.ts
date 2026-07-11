@@ -1,12 +1,14 @@
 import { existsSync } from 'node:fs';
-import { basename, join } from 'node:path';
+import { basename } from 'node:path';
 import { loadConfig, type ResolvedConfig } from '../lib/config.ts';
 import { listWorktrees, type WorktreeEntry } from '../lib/git.ts';
 import { getSession } from '../lib/sessions.ts';
-import { launchClaude } from '../lib/claude.ts';
+import { runCreate } from './create.ts';
 import { createPluginHost, type PluginHost } from '../lib/plugin-host.ts';
 import { pick, pickerFooter, type PickerItem } from '../lib/picker.tsx';
 import { ui } from '../lib/ui.ts';
+import { envPaths } from '../lib/env/paths.ts';
+import { isPidAlive, readState } from '../lib/env/state.ts';
 
 interface Row {
   label: string;
@@ -41,6 +43,12 @@ function renderWorktree(
     if (badge) {
       rows.push({ label: 'task', value: ui.link(ui.cyan(badge.label), badge.url) });
     }
+  }
+
+  const envState = readState(envPaths(cfg.repoConfigPath, name));
+  if (envState) {
+    const alive = envState.pid !== undefined && isPidAlive(envState.pid);
+    rows.push({ label: 'env', value: alive ? ui.green('● running') : ui.dim('○ stopped') });
   }
 
   return { heading: ui.bold(name), rows: renderRows(rows) };
@@ -105,22 +113,7 @@ async function pickAndLaunch(cfg: ResolvedConfig, host: PluginHost, entries: Wor
     return;
   }
 
-  const worktreePath = join(cfg.worktreeDir, selected);
-  const targetDir =
-    cfg.appSubdir && existsSync(join(worktreePath, cfg.appSubdir)) ? join(worktreePath, cfg.appSubdir) : worktreePath;
-
-  const sessionId = getSession(cfg.sessionsFile, selected)?.sessionId;
-  if (sessionId) {
-    ui.success(`Resuming Claude Code session ${ui.dim(sessionId)}`);
-    ui.blank();
-    const exitCode = await launchClaude(['--resume', sessionId, '--name', selected], targetDir);
-    process.exit(exitCode);
-  }
-
-  ui.warn('No saved session for this worktree; starting Claude Code without resume.');
-  ui.blank();
-  const exitCode = await launchClaude(['--name', selected], targetDir);
-  process.exit(exitCode);
+  await runCreate(selected);
 }
 
 export interface LsOptions {

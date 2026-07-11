@@ -36,4 +36,9 @@ describe('reserved names', () => {
   test('RESERVED_NAMES is not empty', () => {
     expect(RESERVED_NAMES.length).toBeGreaterThan(0);
   });
+
+  test("'env' is reserved", () => {
+    expect(isReservedName('env')).toBe(true);
+    expect(isReservedName('ENV')).toBe(true);
+  });
 });

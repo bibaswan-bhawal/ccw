@@ -7,6 +7,7 @@ import { runLs, runPicker } from './commands/ls.ts';
 import { runRm } from './commands/rm.ts';
 import { runConfigGet, runConfigInteractive, runConfigPath, runConfigSet, runConfigUnset } from './commands/config.ts';
 import { runUpdate } from './commands/update.ts';
+import { runEnvLogs, runEnvRestart, runEnvStart, runEnvStatus, runEnvStop } from './commands/env.ts';
 import { maybeNotifyUpdate } from './lib/update/notify.ts';
 import { ConfigMissingError } from './lib/config.ts';
 import { RESERVED_NAMES, isReservedName } from './lib/reserved.ts';
@@ -16,7 +17,7 @@ import { ui } from './lib/ui.ts';
 // Read version at build time — Bun embeds the package.json value.
 import pkg from '../package.json' with { type: 'json' };
 
-const KNOWN_COMMANDS = ['init', 'ls', 'list', 'rm', 'remove', 'config', 'update', 'help', 'version'];
+const KNOWN_COMMANDS = ['init', 'ls', 'list', 'rm', 'remove', 'config', 'update', 'env', 'help', 'version'];
 
 async function main(): Promise<void> {
   checkDependencies();
@@ -98,6 +99,43 @@ async function main(): Promise<void> {
     .option('--check', 'Check for an update and print the result without installing')
     .action(async (opts: { check?: boolean }) => {
       await runUpdate({ check: opts.check });
+    });
+
+  const env = program
+    .command('env')
+    .description('Manage the isolated dev environment for a worktree (see README "Isolated environments")');
+  env
+    .command('status [feature-name]')
+    .description('Show environment state (auto-detects worktree from cwd)')
+    .option('--json', 'Machine-readable output')
+    .action(async (featureName: string | undefined, opts: { json?: boolean }) => {
+      await runEnvStatus(featureName, opts);
+    });
+  env
+    .command('logs [feature-name]')
+    .description('Print the environment log')
+    .option('-n, --lines <count>', 'Number of lines to show', '50')
+    .option('-f, --follow', 'Follow the log (tail -f)')
+    .action(async (featureName: string | undefined, opts: { lines?: string; follow?: boolean }) => {
+      await runEnvLogs(featureName, opts);
+    });
+  env
+    .command('start [feature-name]')
+    .description('Start the environment (runs setup first if needed)')
+    .action(async (featureName: string | undefined) => {
+      await runEnvStart(featureName);
+    });
+  env
+    .command('stop [feature-name]')
+    .description('Stop the environment')
+    .action(async (featureName: string | undefined) => {
+      await runEnvStop(featureName);
+    });
+  env
+    .command('restart [feature-name]')
+    .description('Restart the environment')
+    .action(async (featureName: string | undefined) => {
+      await runEnvRestart(featureName);
     });
 
   // Fallback: any other positional arg creates/opens a worktree with that name.
