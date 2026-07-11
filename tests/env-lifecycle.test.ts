@@ -3,8 +3,8 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, wr
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ResolvedConfig } from '../src/lib/config.ts';
-import { createEnvHandle, ensureState, hasEnvHooks, runSetup, type EnvHandle } from '../src/lib/env/lifecycle.ts';
-import { readState } from '../src/lib/env/state.ts';
+import { createEnvHandle, ensureState, hasEnvHooks, runSetup, startEnvironment, type EnvHandle } from '../src/lib/env/lifecycle.ts';
+import { isPidAlive, readState } from '../src/lib/env/state.ts';
 
 let tmp: string;
 let cfg: ResolvedConfig;
@@ -130,6 +130,55 @@ describe('runSetup', () => {
     writeFileSync(join(dir, 'env-setup'), '#!/bin/sh\nexit 0\n'); // no chmod
     const result = await runSetup(handle());
     expect(result.ok).toBe(false);
+    expect(result.warning).toContain('chmod +x');
+  });
+});
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+describe('startEnvironment', () => {
+  test('no hook: started=false, no state side effects beyond none', async () => {
+    const result = await startEnvironment(handle());
+    expect(result.started).toBe(false);
+    expect(result.alreadyRunning).toBe(false);
+  });
+
+  test('spawns detached, records pid, phase starting, logs output', async () => {
+    writeHook('env-start', 'echo "starting slot $CCW_WORKTREE_SLOT"; sleep 30');
+    const h = handle();
+    const result = await startEnvironment(h);
+    expect(result.started).toBe(true);
+    const state = readState(h.paths);
+    expect(state?.phase).toBe('starting');
+    expect(state?.pid).toBeGreaterThan(0);
+    expect(state?.startedAt).toBeTruthy();
+    expect(isPidAlive(state!.pid!)).toBe(true);
+    await sleep(200); // let the shell write its echo
+    expect(readFileSync(h.paths.logFile, 'utf-8')).toContain('starting slot 0');
+    // cleanup: kill the sleeping process group
+    process.kill(-state!.pid!, 'SIGKILL');
+  });
+
+  test('already running: does not double-start', async () => {
+    writeHook('env-start', 'sleep 30');
+    const h = handle();
+    await startEnvironment(h);
+    const pid = readState(h.paths)!.pid!;
+    const second = await startEnvironment(h);
+    expect(second.started).toBe(false);
+    expect(second.alreadyRunning).toBe(true);
+    expect(readState(h.paths)!.pid).toBe(pid);
+    process.kill(-pid, 'SIGKILL');
+  });
+
+  test('non-executable env-start warns', async () => {
+    const dir = join(worktreePath, '.ccw', 'hooks');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'env-start'), '#!/bin/sh\nsleep 30\n'); // no chmod
+    const result = await startEnvironment(handle());
+    expect(result.started).toBe(false);
     expect(result.warning).toContain('chmod +x');
   });
 });

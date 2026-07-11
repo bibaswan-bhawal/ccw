@@ -1,10 +1,10 @@
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { closeSync, existsSync, mkdirSync, openSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ResolvedConfig } from '../config.ts';
 import { envPaths, envRoot, type EnvPaths } from './paths.ts';
 import { findHook, hookEnv, type HookLookup, type HookName } from './hooks.ts';
-import { allocateSlot, readState, withLock, writeState, type EnvState } from './state.ts';
+import { allocateSlot, isPidAlive, readState, withLock, writeState, type EnvState } from './state.ts';
 
 /** Everything lifecycle functions need, precomputed once from ResolvedConfig. */
 export interface EnvHandle {
@@ -125,4 +125,50 @@ export async function runSetup(handle: EnvHandle): Promise<SetupResult> {
   });
   const reason = result.error ? result.error.message : `exit code ${result.status}`;
   return { ran: true, ok: false, warning: `env-setup failed (${reason}) — see ${handle.paths.logFile}` };
+}
+
+export interface StartResult {
+  started: boolean;
+  alreadyRunning: boolean;
+  warning?: string;
+}
+
+/**
+ * Spawn env-start detached in its own process group, output to env.log.
+ * ccw does NOT wait or watch — readiness is computed lazily by getStatus.
+ * The child must not hold our stdio: Claude owns the terminal next.
+ */
+export async function startEnvironment(handle: EnvHandle): Promise<StartResult> {
+  const lookup = hook(handle, 'env-start');
+  if (!lookup) return { started: false, alreadyRunning: false };
+  if (!lookup.executable) return { started: false, alreadyRunning: false, warning: notExecutableWarning(lookup) };
+
+  const state = await ensureState(handle);
+  if (state.pid && isPidAlive(state.pid)) return { started: false, alreadyRunning: true };
+
+  mkdirSync(handle.paths.scratchDir, { recursive: true });
+  const logFd = openSync(handle.paths.logFile, 'a');
+  let child;
+  try {
+    child = spawn(lookup.path, [], {
+      cwd: handle.hookCwd,
+      env: buildHookEnv(handle, state.slot),
+      detached: true,
+      stdio: ['ignore', logFd, logFd],
+    });
+  } finally {
+    closeSync(logFd);
+  }
+  child.unref();
+
+  const pid = child.pid;
+  if (!pid) {
+    return { started: false, alreadyRunning: false, warning: `env-start failed to spawn — see ${handle.paths.logFile}` };
+  }
+
+  await withLock(handle.paths.lockFile, () => {
+    const current = readState(handle.paths) ?? state;
+    writeState(handle.paths, { ...current, phase: 'starting', pid, startedAt: new Date().toISOString() });
+  });
+  return { started: true, alreadyRunning: false };
 }
