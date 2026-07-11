@@ -57,6 +57,20 @@ describe('findHook', () => {
     expect(found?.executable).toBe(false);
     expect(found?.source).toBe('repo');
   });
+
+  test('a directory named like a hook is ignored, not treated as executable', () => {
+    // Directories pass X_OK (they're traversable), so without an isFile()
+    // guard this would be misreported as a runnable hook.
+    mkdirSync(join(worktreePath, '.ccw', 'hooks', 'env-start'), { recursive: true });
+    expect(findHook('env-start', worktreePath, repoConfigPath)).toBeUndefined();
+  });
+
+  test('falls through to user-level hook when in-tree candidate is a directory', () => {
+    mkdirSync(join(worktreePath, '.ccw', 'hooks', 'env-start'), { recursive: true });
+    const p = writeHook(join(tmp, 'data', 'repos', '-x', 'hooks'), 'env-start');
+    const found = findHook('env-start', worktreePath, repoConfigPath);
+    expect(found).toEqual({ path: p, source: 'user', executable: true });
+  });
 });
 
 describe('hookEnv', () => {

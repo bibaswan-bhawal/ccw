@@ -132,6 +132,19 @@ describe('runSetup', () => {
     expect(result.ok).toBe(false);
     expect(result.warning).toContain('chmod +x');
   });
+
+  test('concurrent setups: hook runs exactly once', async () => {
+    // The second caller blocks on the lock while the first runs the hook,
+    // rather than both observing "not completed yet" and double-running it.
+    writeHook('env-setup', `echo run >> "$CCW_ENV_DIR/marker"; sleep 0.5`);
+    const h = handle();
+    const [r1, r2] = await Promise.all([runSetup(h), runSetup(h)]);
+    const ran = [r1, r2].filter((r) => r.ran && r.ok);
+    expect(ran).toHaveLength(1);
+    const marker = readFileSync(join(h.paths.scratchDir, 'marker'), 'utf-8').trim().split('\n');
+    expect(marker).toHaveLength(1);
+    expect(readState(h.paths)?.setupCompletedAt).toBeTruthy();
+  }, 15_000);
 });
 
 function sleep(ms: number): Promise<void> {
@@ -181,6 +194,35 @@ describe('startEnvironment', () => {
     expect(result.started).toBe(false);
     expect(result.warning).toContain('chmod +x');
   });
+
+  test('unexecutable binary garbage (ENOEXEC) resolves with a warning, does not throw', async () => {
+    // No shebang, no valid executable format — the kernel refuses to exec
+    // this at all. spawn() must be caught, not left to throw out of
+    // startEnvironment / crash ccw.
+    const dir = join(worktreePath, '.ccw', 'hooks');
+    mkdirSync(dir, { recursive: true });
+    const path = join(dir, 'env-start');
+    writeFileSync(path, Buffer.from([0x7f, 0x45, 0x4c, 0x46, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]));
+    chmodSync(path, 0o755);
+    await expect(startEnvironment(handle())).resolves.toEqual(
+      expect.objectContaining({ started: false, alreadyRunning: false, warning: expect.stringContaining('failed to spawn') }),
+    );
+  });
+
+  test('concurrent starts: exactly one spawn wins', async () => {
+    writeHook('env-start', `echo "start $$" >> "$CCW_ENV_DIR/marker"; sleep 30`);
+    const h = handle();
+    const [r1, r2] = await Promise.all([startEnvironment(h), startEnvironment(h)]);
+    const started = [r1, r2].filter((r) => r.started);
+    const already = [r1, r2].filter((r) => r.alreadyRunning);
+    expect(started).toHaveLength(1);
+    expect(already).toHaveLength(1);
+    await sleep(300);
+    const marker = readFileSync(join(h.paths.scratchDir, 'marker'), 'utf-8').trim().split('\n');
+    expect(marker).toHaveLength(1);
+    const pid = readState(h.paths)!.pid!;
+    process.kill(-pid, 'SIGKILL');
+  }, 15_000);
 });
 
 describe('stopEnvironment', () => {
@@ -211,6 +253,18 @@ describe('stopEnvironment', () => {
   test('no state: no-op', async () => {
     await expect(stopEnvironment(handle())).resolves.toBeUndefined();
   });
+
+  test('a hook that traps SIGTERM is still killed by the timeout (SIGKILL), teardown does not hang', async () => {
+    writeHook('env-stop', "trap '' TERM\nsleep 60");
+    const h = handle();
+    await ensureState(h); // env-stop needs *a* state to run against
+    const start = Date.now();
+    // Small override so the test doesn't wait out the real 30s timeout —
+    // see stopEnvironment's stopHookTimeoutMs parameter.
+    await stopEnvironment(h, 300);
+    expect(Date.now() - start).toBeLessThan(5_000);
+    expect(readState(h.paths)?.phase).toBe('stopped');
+  }, 10_000);
 });
 
 describe('removeEnvironment', () => {
@@ -256,6 +310,47 @@ describe('getStatus', () => {
     expect(s.phase).toBe('running');
     await stopEnvironment(h);
   }, 15_000);
+
+  test('restart staleness: a ready line from the previous run does not carry over', async () => {
+    writeHook('env-start', 'sleep 30'); // does NOT print the ready line itself
+    const h = { ...handle(), readyPattern: 'Listening on' };
+    await startEnvironment(h);
+    // Simulate the previous run having already reached readiness.
+    writeFileSync(h.paths.logFile, 'Listening on http://localhost:3000\n', { flag: 'a' });
+    expect((await getStatus(h)).ready).toBe(true);
+    await stopEnvironment(h);
+
+    // Restart: logOffsetAtStart should move past the stale ready line, so
+    // the new run must NOT be reported ready just because of old output.
+    await startEnvironment(h);
+    let s = await getStatus(h);
+    expect(s.ready).toBe(false);
+    expect(s.phase).toBe('starting');
+
+    // Only a NEW ready line (written after the restart) counts.
+    writeFileSync(h.paths.logFile, 'Listening on http://localhost:3001\n', { flag: 'a' });
+    s = await getStatus(h);
+    expect(s.ready).toBe(true);
+    expect(s.phase).toBe('running');
+    await stopEnvironment(h);
+  }, 15_000);
+
+  test('daemonized env-start with ready_pattern (no env-status hook) reports running, not failed', async () => {
+    // Self-daemonizing shape: env-start prints its ready line then exits.
+    // The line lands in the log AFTER logOffsetAtStart was recorded (offset
+    // is captured before spawn), so it still counts as fresh evidence even
+    // though the leader process is already gone by the time getStatus runs.
+    writeHook('env-start', 'echo "Listening on http://localhost:3000"; exit 0');
+    const h = { ...handle(), readyPattern: 'Listening on' };
+    await startEnvironment(h);
+    await sleep(300); // let env-start print and exit
+    const s = await getStatus(h);
+    expect(s.alive).toBe(false);
+    expect(s.ready).toBe(true);
+    expect(s.phase).toBe('running');
+    expect(s.warnings.some((w) => w.includes('env-stop'))).toBe(true);
+    expect(readState(h.paths)?.phase).toBe('running');
+  });
 
   test('dead pid without env-status hook reports failed with log tail', async () => {
     writeHook('env-start', 'echo died-immediately; exit 1');

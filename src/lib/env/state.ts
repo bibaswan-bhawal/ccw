@@ -23,6 +23,13 @@ export interface EnvState {
   startedAt?: string;
   /** Present ⇒ env-setup succeeded once; don't re-run. */
   setupCompletedAt?: string;
+  /**
+   * Byte size of env.log at the moment this env-start was spawned. Readiness
+   * checks (ready_pattern) must only scan content written after this offset
+   * — otherwise a ready line from a previous run makes a freshly restarted,
+   * not-yet-ready environment look ready immediately.
+   */
+  logOffsetAtStart?: number;
   attachedSessions: AttachedSession[];
 }
 

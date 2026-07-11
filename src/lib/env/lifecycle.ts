@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from 'node:child_process';
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync } from 'node:fs';
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ResolvedConfig } from '../config.ts';
 import { envPaths, envRoot, type EnvPaths } from './paths.ts';
@@ -88,6 +88,18 @@ const SETUP_TIMEOUT_MS = 10 * 60 * 1000; // installs can be slow; still bounded
  * Run env-setup once, blocking, output appended to env.log. Success is
  * recorded as setupCompletedAt; failure marks phase=failed but the worktree
  * remains usable (a broken env script must not lock the user out).
+ *
+ * The completed-check AND the hook run both happen inside the per-feature
+ * lock (single critical section) so two concurrent callers (e.g. `ccw env
+ * start` racing a session attach) can't both observe "setup needed" and run
+ * the hook twice. This means setup is allowed to be slow — up to
+ * SETUP_TIMEOUT_MS — while holding the lock; a second concurrent caller
+ * blocks on withLock's ~5s retry budget and then throws. That's an accepted
+ * tradeoff over the alternative (a separate "claim" flag written under the
+ * lock with the hook run outside it): double-running a setup script is far
+ * worse than a rare concurrent invocation surfacing a thrown error, and
+ * every caller of runSetup already treats a thrown/rejected setup as an
+ * environment-start failure.
  */
 export async function runSetup(handle: EnvHandle): Promise<SetupResult> {
   const lookup = hook(handle, 'env-setup');
@@ -95,36 +107,35 @@ export async function runSetup(handle: EnvHandle): Promise<SetupResult> {
   if (!lookup.executable) return { ran: false, ok: false, warning: notExecutableWarning(lookup) };
 
   const state = await ensureState(handle);
-  if (state.setupCompletedAt) return { ran: false, ok: true };
 
-  mkdirSync(handle.paths.scratchDir, { recursive: true });
-  const logFd = openSync(handle.paths.logFile, 'a');
-  let result;
-  try {
-    result = spawnSync(lookup.path, [], {
-      cwd: handle.hookCwd,
-      env: buildHookEnv(handle, state.slot),
-      stdio: ['ignore', logFd, logFd],
-      timeout: SETUP_TIMEOUT_MS,
-    });
-  } finally {
-    closeSync(logFd);
-  }
-
-  if (result.status === 0) {
-    await withLock(handle.paths.lockFile, () => {
-      const current = readState(handle.paths) ?? state;
-      writeState(handle.paths, { ...current, setupCompletedAt: new Date().toISOString() });
-    });
-    return { ran: true, ok: true };
-  }
-
-  await withLock(handle.paths.lockFile, () => {
+  return withLock(handle.paths.lockFile, () => {
     const current = readState(handle.paths) ?? state;
+    if (current.setupCompletedAt) return { ran: false, ok: true };
+
+    mkdirSync(handle.paths.scratchDir, { recursive: true });
+    const logFd = openSync(handle.paths.logFile, 'a');
+    let result;
+    try {
+      result = spawnSync(lookup.path, [], {
+        cwd: handle.hookCwd,
+        env: buildHookEnv(handle, current.slot),
+        stdio: ['ignore', logFd, logFd],
+        timeout: SETUP_TIMEOUT_MS,
+        killSignal: 'SIGKILL',
+      });
+    } finally {
+      closeSync(logFd);
+    }
+
+    if (result.status === 0) {
+      writeState(handle.paths, { ...current, setupCompletedAt: new Date().toISOString() });
+      return { ran: true, ok: true };
+    }
+
     writeState(handle.paths, { ...current, phase: 'failed' });
+    const reason = result.error ? result.error.message : `exit code ${result.status}`;
+    return { ran: true, ok: false, warning: `env-setup failed (${reason}) — see ${handle.paths.logFile}` };
   });
-  const reason = result.error ? result.error.message : `exit code ${result.status}`;
-  return { ran: true, ok: false, warning: `env-setup failed (${reason}) — see ${handle.paths.logFile}` };
 }
 
 export interface StartResult {
@@ -137,6 +148,10 @@ export interface StartResult {
  * Spawn env-start detached in its own process group, output to env.log.
  * ccw does NOT wait or watch — readiness is computed lazily by getStatus.
  * The child must not hold our stdio: Claude owns the terminal next.
+ *
+ * The alive-check, spawn, and state write are one critical section under
+ * the per-feature lock so two concurrent callers can't both see "not
+ * running" and both spawn a second env-start.
  */
 export async function startEnvironment(handle: EnvHandle): Promise<StartResult> {
   const lookup = hook(handle, 'env-start');
@@ -144,33 +159,57 @@ export async function startEnvironment(handle: EnvHandle): Promise<StartResult> 
   if (!lookup.executable) return { started: false, alreadyRunning: false, warning: notExecutableWarning(lookup) };
 
   const state = await ensureState(handle);
-  if (state.pid && isPidAlive(state.pid)) return { started: false, alreadyRunning: true };
 
-  mkdirSync(handle.paths.scratchDir, { recursive: true });
-  const logFd = openSync(handle.paths.logFile, 'a');
-  let child;
-  try {
-    child = spawn(lookup.path, [], {
-      cwd: handle.hookCwd,
-      env: buildHookEnv(handle, state.slot),
-      detached: true,
-      stdio: ['ignore', logFd, logFd],
-    });
-  } finally {
-    closeSync(logFd);
-  }
-  child.unref();
-
-  const pid = child.pid;
-  if (!pid) {
-    return { started: false, alreadyRunning: false, warning: `env-start failed to spawn — see ${handle.paths.logFile}` };
-  }
-
-  await withLock(handle.paths.lockFile, () => {
+  return withLock(handle.paths.lockFile, () => {
     const current = readState(handle.paths) ?? state;
-    writeState(handle.paths, { ...current, phase: 'starting', pid, startedAt: new Date().toISOString() });
+    if (current.pid && isPidAlive(current.pid)) return { started: false, alreadyRunning: true };
+
+    mkdirSync(handle.paths.scratchDir, { recursive: true });
+    const logFd = openSync(handle.paths.logFile, 'a');
+    // Recorded before the child can write anything, so readiness checks
+    // (grepReady) know where THIS run's output begins — a ready line left
+    // over from a previous run must not make a fresh restart look ready.
+    const logOffsetAtStart = statSync(handle.paths.logFile).size;
+
+    let child;
+    try {
+      child = spawn(lookup.path, [], {
+        cwd: handle.hookCwd,
+        env: buildHookEnv(handle, current.slot),
+        detached: true,
+        stdio: ['ignore', logFd, logFd],
+      });
+    } catch (err) {
+      closeSync(logFd);
+      const message = err instanceof Error ? err.message : String(err);
+      return {
+        started: false,
+        alreadyRunning: false,
+        warning: `env-start failed to spawn (${message}) — see ${handle.paths.logFile}`,
+      };
+    }
+    closeSync(logFd);
+    // Async spawn failures (e.g. the process dies before Node finishes
+    // wiring it up) emit 'error' on the child. Without a listener that's an
+    // unhandled event that would crash ccw; the pid/log/getStatus already
+    // surface the failure, so this listener only needs to exist.
+    child.once('error', () => {});
+    child.unref();
+
+    const pid = child.pid;
+    if (!pid) {
+      return { started: false, alreadyRunning: false, warning: `env-start failed to spawn — see ${handle.paths.logFile}` };
+    }
+
+    writeState(handle.paths, {
+      ...current,
+      phase: 'starting',
+      pid,
+      startedAt: new Date().toISOString(),
+      logOffsetAtStart,
+    });
+    return { started: true, alreadyRunning: false };
   });
-  return { started: true, alreadyRunning: false };
 }
 
 const STOP_HOOK_TIMEOUT_MS = 30_000;
@@ -205,8 +244,14 @@ async function killProcessGroup(pid: number): Promise<void> {
  * Teardown: env-stop hook first (bounded — teardown must never hang the
  * terminal), then reap whatever's left of the process group. Safe to call
  * when nothing is running.
+ *
+ * `stopHookTimeoutMs` defaults to STOP_HOOK_TIMEOUT_MS; it's an optional
+ * override purely so tests can exercise the "hook won't die" path (a
+ * SIGTERM-trapping hook) without waiting out the real 30s timeout. This is
+ * the least invasive option: STOP_HOOK_TIMEOUT_MS stays a plain module
+ * constant (no mutable exported state for production callers to trip over).
  */
-export async function stopEnvironment(handle: EnvHandle): Promise<void> {
+export async function stopEnvironment(handle: EnvHandle, stopHookTimeoutMs = STOP_HOOK_TIMEOUT_MS): Promise<void> {
   const state = readState(handle.paths);
   if (!state) return;
 
@@ -219,7 +264,8 @@ export async function stopEnvironment(handle: EnvHandle): Promise<void> {
         cwd: handle.hookCwd,
         env: buildHookEnv(handle, state.slot),
         stdio: ['ignore', logFd, logFd],
-        timeout: STOP_HOOK_TIMEOUT_MS,
+        timeout: stopHookTimeoutMs,
+        killSignal: 'SIGKILL',
       });
     } finally {
       closeSync(logFd);
@@ -284,7 +330,17 @@ function runStatusHook(handle: EnvHandle, slot: number): { json?: unknown; warni
     env: buildHookEnv(handle, slot),
     encoding: 'utf-8',
     timeout: STATUS_HOOK_TIMEOUT_MS,
+    killSignal: 'SIGKILL',
   });
+  // result.error is set for spawn-level failures (e.g. ENOENT); result.status
+  // is null both for those and when the timeout killed the process — neither
+  // case has a real exit code, so "exited with code null" would be confusing.
+  if (result.error) {
+    return { warning: `env-status failed (${result.error.message})` };
+  }
+  if (result.status === null) {
+    return { warning: 'env-status timed out' };
+  }
   if (result.status !== 0) {
     return { warning: `env-status exited with code ${result.status}` };
   }
@@ -295,14 +351,21 @@ function runStatusHook(handle: EnvHandle, slot: number): { json?: unknown; warni
   }
 }
 
-function grepReady(handle: EnvHandle): boolean | undefined {
+/**
+ * Only scan log content written since this env-start's logOffsetAtStart —
+ * otherwise a ready line left over from a previous run (before a restart)
+ * would make a not-yet-ready environment report ready immediately.
+ */
+function grepReady(handle: EnvHandle, offsetAtStart: number): boolean | undefined {
   if (!handle.readyPattern) return undefined;
   if (!existsSync(handle.paths.logFile)) return false;
+  const buf = readFileSync(handle.paths.logFile);
+  const content = buf.subarray(Math.min(offsetAtStart, buf.length)).toString('utf-8');
   try {
-    return new RegExp(handle.readyPattern).test(readFileSync(handle.paths.logFile, 'utf-8'));
+    return new RegExp(handle.readyPattern).test(content);
   } catch {
     // Invalid regex in config — fall back to substring.
-    return readFileSync(handle.paths.logFile, 'utf-8').includes(handle.readyPattern);
+    return content.includes(handle.readyPattern);
   }
 }
 
@@ -342,15 +405,19 @@ export async function getStatus(handle: EnvHandle): Promise<EnvStatus> {
   if (hookResult.json !== undefined) {
     ready = (hookResult.json as { ready?: unknown }).ready === true;
   } else {
-    ready = grepReady(handle);
+    ready = grepReady(handle, state.logOffsetAtStart ?? 0);
   }
 
   let phase = state.phase;
   if (wasActive) {
     if (alive) {
       phase = ready === false ? 'starting' : 'running';
-    } else if (ready === true && hookResult.json !== undefined) {
-      // Self-daemonized: the start process is gone but the hook says healthy.
+    } else if (ready === true) {
+      // Self-daemonized: the start process is gone, but there's positive
+      // readiness evidence — either an env-status hook reporting healthy,
+      // or the ready_pattern having matched in the log (e.g. `docker
+      // compose up -d` printing its ready line before env-start exits).
+      // Either way this must not be reported/persisted as failed.
       phase = 'running';
       if (!hook(handle, 'env-stop')) {
         warnings.push(

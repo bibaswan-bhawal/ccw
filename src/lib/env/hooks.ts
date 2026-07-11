@@ -1,4 +1,4 @@
-import { accessSync, constants, existsSync } from 'node:fs';
+import { accessSync, constants, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
 export type HookName = 'env-setup' | 'env-start' | 'env-stop' | 'env-status';
@@ -23,7 +23,16 @@ export function findHook(name: HookName, worktreePath: string, repoConfigPath: s
     { path: join(dirname(repoConfigPath), 'hooks', name), source: 'user' },
   ];
   for (const candidate of candidates) {
-    if (!existsSync(candidate.path)) continue;
+    let stat;
+    try {
+      stat = statSync(candidate.path);
+    } catch {
+      continue;
+    }
+    // A directory happens to pass X_OK (traversable), so it must be
+    // rejected explicitly here or it would be reported as an "executable"
+    // hook and then fail to spawn.
+    if (!stat.isFile()) continue;
     let executable = true;
     try {
       accessSync(candidate.path, constants.X_OK);
