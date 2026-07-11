@@ -7,6 +7,8 @@ import { runCreate } from './create.ts';
 import { createPluginHost, type PluginHost } from '../lib/plugin-host.ts';
 import { pick, pickerFooter, type PickerItem } from '../lib/picker.tsx';
 import { ui } from '../lib/ui.ts';
+import { envPaths } from '../lib/env/paths.ts';
+import { isPidAlive, readState } from '../lib/env/state.ts';
 
 interface Row {
   label: string;
@@ -41,6 +43,12 @@ function renderWorktree(
     if (badge) {
       rows.push({ label: 'task', value: ui.link(ui.cyan(badge.label), badge.url) });
     }
+  }
+
+  const envState = readState(envPaths(cfg.repoConfigPath, name));
+  if (envState) {
+    const alive = envState.pid !== undefined && isPidAlive(envState.pid);
+    rows.push({ label: 'env', value: alive ? ui.green('● running') : ui.dim('○ stopped') });
   }
 
   return { heading: ui.bold(name), rows: renderRows(rows) };

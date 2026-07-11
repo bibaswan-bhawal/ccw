@@ -8,6 +8,9 @@ import { confirm } from '../lib/prompt.tsx';
 import { pickMany, pickerFooter, type PickerItem } from '../lib/picker.tsx';
 import { withSpinner } from '../lib/spinner.tsx';
 import { ui } from '../lib/ui.ts';
+import { createEnvHandle, removeEnvironment } from '../lib/env/lifecycle.ts';
+import { envPaths } from '../lib/env/paths.ts';
+import { isPidAlive, readState } from '../lib/env/state.ts';
 
 interface Row {
   label: string;
@@ -44,6 +47,12 @@ function renderWorktree(
     }
   }
 
+  const envState = readState(envPaths(cfg.repoConfigPath, name));
+  if (envState) {
+    const alive = envState.pid !== undefined && isPidAlive(envState.pid);
+    rows.push({ label: 'env', value: alive ? ui.green('● running') : ui.dim('○ stopped') });
+  }
+
   return { heading: ui.bold(name), rows: renderRows(rows) };
 }
 
@@ -64,6 +73,7 @@ async function removeOne(cfg: ResolvedConfig, featureName: string): Promise<void
   await withSpinner(
     `Removing ${ui.bold(featureName)}...`,
     async () => {
+      await removeEnvironment(createEnvHandle(cfg, featureName, worktreePath));
       await removeWorktree(cfg.gitRoot, worktreePath);
       removeSessionId(cfg.sessionsFile, featureName);
       if (branchExists(cfg.gitRoot, featureName)) {
@@ -125,6 +135,7 @@ async function pickAndRemove(cfg: ResolvedConfig, host: PluginHost, entries: Wor
       await withSpinner(
         `Removing ${ui.bold(name)}...`,
         async () => {
+          await removeEnvironment(createEnvHandle(cfg, name, path));
           await removeWorktree(cfg.gitRoot, path);
           removeSessionId(cfg.sessionsFile, name);
           // Branches are typically already deleted (merged PRs). If one
