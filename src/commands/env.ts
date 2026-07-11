@@ -11,6 +11,7 @@ import {
   stopEnvironment,
   type EnvHandle,
 } from '../lib/env/lifecycle.ts';
+import { envPaths } from '../lib/env/paths.ts';
 import { ui } from '../lib/ui.ts';
 
 /**
@@ -33,9 +34,19 @@ function resolveHandle(featureName: string | undefined): { cfg: ResolvedConfig; 
   }
   const worktreePath = join(cfg.worktreeDir, name);
   if (!existsSync(worktreePath)) {
-    ui.error(`Worktree not found: ${worktreePath}`);
-    ui.hint("Run 'ccw ls' to see active worktrees.");
-    process.exit(1);
+    // The worktree itself may be gone (removed by hand, or `ccw rm` failed
+    // partway) while its environment state survives — that's exactly the
+    // orphaned case this needs to let through so `ccw env stop`/`status`
+    // can still reap it: repo-level hooks won't be found (they live in the
+    // now-missing worktree), but user-level hooks (~/.ccw/repos/.../hooks)
+    // still resolve, and group-kill by the recorded pid needs no hooks at
+    // all. Only bail out when there's truly nothing to act on.
+    const stateFile = envPaths(cfg.repoConfigPath, name).stateFile;
+    if (!existsSync(stateFile)) {
+      ui.error(`No worktree or environment found for '${name}'.`);
+      ui.hint("Run 'ccw ls' to see active worktrees.");
+      process.exit(1);
+    }
   }
   return { cfg, handle: createEnvHandle(cfg, name, worktreePath) };
 }
@@ -99,12 +110,13 @@ export async function runEnvLogs(
   console.log(lines.slice(Math.max(0, lines.length - count - 1)).join('\n'));
 }
 
-export async function runEnvStart(featureName: string | undefined): Promise<void> {
-  const { handle } = resolveHandle(featureName);
-  if (!hasEnvHooks(handle)) {
-    ui.error('No env hooks for this repo (.ccw/hooks/env-start).');
-    process.exit(1);
-  }
+/**
+ * Shared by `ccw env start` and `ccw env restart`: run setup (if needed,
+ * retrying a previously-failed setup) then start. Restart used to skip this
+ * and call startEnvironment directly, which meant a broken env-setup was
+ * never retried on restart and hook-validation warnings never surfaced.
+ */
+async function runSetupThenStart(handle: EnvHandle, startingLabel: string): Promise<void> {
   const setup = await runSetup(handle);
   if (setup.warning) ui.warn(setup.warning);
   if (!setup.ok) process.exit(1);
@@ -115,8 +127,19 @@ export async function runEnvStart(featureName: string | undefined): Promise<void
     return;
   }
   if (result.started) {
-    ui.success(`Environment starting. Check with ${ui.bold('ccw env status')}.`);
+    ui.success(`${startingLabel} Check with ${ui.bold('ccw env status')}.`);
+  } else if (!result.warning) {
+    ui.warn('Nothing started — is there an env-start hook?');
   }
+}
+
+export async function runEnvStart(featureName: string | undefined): Promise<void> {
+  const { handle } = resolveHandle(featureName);
+  if (!hasEnvHooks(handle)) {
+    ui.error('No env hooks for this repo (.ccw/hooks/env-start).');
+    process.exit(1);
+  }
+  await runSetupThenStart(handle, 'Environment starting.');
 }
 
 export async function runEnvStop(featureName: string | undefined): Promise<void> {
@@ -128,8 +151,5 @@ export async function runEnvStop(featureName: string | undefined): Promise<void>
 export async function runEnvRestart(featureName: string | undefined): Promise<void> {
   const { handle } = resolveHandle(featureName);
   await stopEnvironment(handle);
-  const result = await startEnvironment(handle);
-  if (result.warning) ui.warn(result.warning);
-  if (result.started) ui.success(`Environment restarting. Check with ${ui.bold('ccw env status')}.`);
-  else ui.warn('Nothing started — is there an env-start hook?');
+  await runSetupThenStart(handle, 'Environment restarting.');
 }
