@@ -73,7 +73,12 @@ async function removeOne(cfg: ResolvedConfig, featureName: string): Promise<void
   await withSpinner(
     `Removing ${ui.bold(featureName)}...`,
     async () => {
-      await removeEnvironment(createEnvHandle(cfg, featureName, worktreePath));
+      try {
+        await removeEnvironment(createEnvHandle(cfg, featureName, worktreePath));
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        ui.warn(`Environment teardown failed (${message}) — removing worktree anyway.`);
+      }
       await removeWorktree(cfg.gitRoot, worktreePath);
       removeSessionId(cfg.sessionsFile, featureName);
       if (branchExists(cfg.gitRoot, featureName)) {
@@ -135,7 +140,12 @@ async function pickAndRemove(cfg: ResolvedConfig, host: PluginHost, entries: Wor
       await withSpinner(
         `Removing ${ui.bold(name)}...`,
         async () => {
-          await removeEnvironment(createEnvHandle(cfg, name, path));
+          try {
+            await removeEnvironment(createEnvHandle(cfg, name, path));
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            ui.warn(`Environment teardown failed (${message}) — removing worktree anyway.`);
+          }
           await removeWorktree(cfg.gitRoot, path);
           removeSessionId(cfg.sessionsFile, name);
           // Branches are typically already deleted (merged PRs). If one
