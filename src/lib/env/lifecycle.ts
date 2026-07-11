@@ -57,6 +57,16 @@ function buildHookEnv(handle: EnvHandle, slot: number): NodeJS.ProcessEnv {
 }
 
 /**
+ * cwd for a spawned hook. For an orphaned worktree (deleted, but its env
+ * state — and therefore a user-level hook — survives), handle.hookCwd no
+ * longer exists and spawn(Sync) would fail with ENOENT. Fall back to
+ * paths.root, which always exists once state does (writeState creates it).
+ */
+function hookRunCwd(handle: EnvHandle): string {
+  return existsSync(handle.hookCwd) ? handle.hookCwd : handle.paths.root;
+}
+
+/**
  * First touch creates the state file and claims a slot. Slot allocation
  * scans sibling worktrees, so it takes a repo-wide lock (not the per-feature
  * one) to keep two concurrent creates from picking the same slot.
@@ -85,54 +95,78 @@ export interface SetupResult {
 const SETUP_TIMEOUT_MS = 10 * 60 * 1000; // installs can be slow; still bounded
 
 /**
- * Run env-setup once, blocking, output appended to env.log. Success is
- * recorded as setupCompletedAt; failure marks phase=failed but the worktree
- * remains usable (a broken env script must not lock the user out).
+ * Run env-setup once, output appended to env.log. Success is recorded as
+ * setupCompletedAt; failure marks phase=failed but the worktree remains
+ * usable (a broken env script must not lock the user out).
  *
- * The completed-check AND the hook run both happen inside the per-feature
- * lock (single critical section) so two concurrent callers (e.g. `ccw env
- * start` racing a session attach) can't both observe "setup needed" and run
- * the hook twice. This means setup is allowed to be slow — up to
- * SETUP_TIMEOUT_MS — while holding the lock; a second concurrent caller
- * blocks on withLock's ~5s retry budget and then throws. That's an accepted
- * tradeoff over the alternative (a separate "claim" flag written under the
- * lock with the hook run outside it): double-running a setup script is far
- * worse than a rare concurrent invocation surfacing a thrown error, and
- * every caller of runSetup already treats a thrown/rejected setup as an
- * environment-start failure.
+ * The lock's critical sections here are millisecond-scale, per its own
+ * contract (see withLock's doc) — the hook itself (up to SETUP_TIMEOUT_MS)
+ * runs OUTSIDE the lock. Two short critical sections bracket it:
+ *
+ *  1. Read state; if setupCompletedAt is already set, nothing to do. If a
+ *     claim (setupStartedAt/setupPid) exists AND that pid is still alive,
+ *     another ccw process is running setup right now — return immediately
+ *     with a warning rather than waiting (withLock only retries ~5s, and
+ *     setup can take up to 10 minutes; blocking that long — or throwing —
+ *     would violate the "never lock the user out" contract). A claim whose
+ *     pid has died (crashed setup) is treated as no claim. Otherwise, write
+ *     a fresh claim naming this process and proceed.
+ *  2. After the hook returns, re-read state, write setupCompletedAt (or
+ *     phase=failed) and remove the claim fields.
+ *
+ * This means at most one process ever executes the hook at a time (the
+ * claim is written — and observed — only under the lock), while a
+ * concurrent caller never blocks for the hook's duration.
  */
 export async function runSetup(handle: EnvHandle): Promise<SetupResult> {
   const lookup = hook(handle, 'env-setup');
   if (!lookup) return { ran: false, ok: true };
   if (!lookup.executable) return { ran: false, ok: false, warning: notExecutableWarning(lookup) };
 
-  const state = await ensureState(handle);
+  const initial = await ensureState(handle);
+
+  let claimed: EnvState | undefined;
+  const early = await withLock(handle.paths.lockFile, (): SetupResult | undefined => {
+    const current = readState(handle.paths) ?? initial;
+    if (current.setupCompletedAt) return { ran: false, ok: true };
+    if (current.setupPid !== undefined && isPidAlive(current.setupPid)) {
+      return {
+        ran: false,
+        ok: false,
+        warning: 'env-setup already running in another ccw process — continuing without waiting',
+      };
+    }
+    claimed = { ...current, setupStartedAt: new Date().toISOString(), setupPid: process.pid };
+    writeState(handle.paths, claimed);
+    return undefined;
+  });
+  if (early) return early;
+  const current = claimed!;
+
+  mkdirSync(handle.paths.scratchDir, { recursive: true });
+  const logFd = openSync(handle.paths.logFile, 'a');
+  let result;
+  try {
+    result = spawnSync(lookup.path, [], {
+      cwd: hookRunCwd(handle),
+      env: buildHookEnv(handle, current.slot),
+      stdio: ['ignore', logFd, logFd],
+      timeout: SETUP_TIMEOUT_MS,
+      killSignal: 'SIGKILL',
+    });
+  } finally {
+    closeSync(logFd);
+  }
 
   return withLock(handle.paths.lockFile, () => {
-    const current = readState(handle.paths) ?? state;
-    if (current.setupCompletedAt) return { ran: false, ok: true };
-
-    mkdirSync(handle.paths.scratchDir, { recursive: true });
-    const logFd = openSync(handle.paths.logFile, 'a');
-    let result;
-    try {
-      result = spawnSync(lookup.path, [], {
-        cwd: handle.hookCwd,
-        env: buildHookEnv(handle, current.slot),
-        stdio: ['ignore', logFd, logFd],
-        timeout: SETUP_TIMEOUT_MS,
-        killSignal: 'SIGKILL',
-      });
-    } finally {
-      closeSync(logFd);
-    }
-
+    const latest = readState(handle.paths) ?? current;
+    const { setupStartedAt: _setupStartedAt, setupPid: _setupPid, ...rest } = latest;
     if (result.status === 0) {
-      writeState(handle.paths, { ...current, setupCompletedAt: new Date().toISOString() });
+      writeState(handle.paths, { ...rest, setupCompletedAt: new Date().toISOString() });
       return { ran: true, ok: true };
     }
 
-    writeState(handle.paths, { ...current, phase: 'failed' });
+    writeState(handle.paths, { ...rest, phase: 'failed' });
     const reason = result.error ? result.error.message : `exit code ${result.status}`;
     return { ran: true, ok: false, warning: `env-setup failed (${reason}) — see ${handle.paths.logFile}` };
   });
@@ -174,7 +208,7 @@ export async function startEnvironment(handle: EnvHandle): Promise<StartResult> 
     let child;
     try {
       child = spawn(lookup.path, [], {
-        cwd: handle.hookCwd,
+        cwd: hookRunCwd(handle),
         env: buildHookEnv(handle, current.slot),
         detached: true,
         stdio: ['ignore', logFd, logFd],
@@ -261,7 +295,7 @@ export async function stopEnvironment(handle: EnvHandle, stopHookTimeoutMs = STO
     const logFd = openSync(handle.paths.logFile, 'a');
     try {
       spawnSync(lookup.path, [], {
-        cwd: handle.hookCwd,
+        cwd: hookRunCwd(handle),
         env: buildHookEnv(handle, state.slot),
         stdio: ['ignore', logFd, logFd],
         timeout: stopHookTimeoutMs,
@@ -326,7 +360,7 @@ function runStatusHook(handle: EnvHandle, slot: number): { json?: unknown; warni
   if (!lookup) return {};
   if (!lookup.executable) return { warning: notExecutableWarning(lookup) };
   const result = spawnSync(lookup.path, [], {
-    cwd: handle.hookCwd,
+    cwd: hookRunCwd(handle),
     env: buildHookEnv(handle, slot),
     encoding: 'utf-8',
     timeout: STATUS_HOOK_TIMEOUT_MS,

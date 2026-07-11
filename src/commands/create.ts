@@ -96,8 +96,22 @@ export async function runCreate(featureName: string): Promise<void> {
   ui.info(`Starting Claude Code in ${ui.cyan(targetDir)}`);
   ui.blank();
   const exitCode = await launchClaude(claudeArgs, targetDir);
-  if (envRunning) await detachSession(env, sessionId);
+  if (envRunning) await tryDetach(env, sessionId);
   process.exit(exitCode);
+}
+
+/**
+ * detachSession failures must never clobber Claude's exit code — Claude
+ * already ran to completion, so a bookkeeping error here is a warning, not
+ * a reason to report failure (or crash) on the way out.
+ */
+async function tryDetach(env: EnvHandle, sessionId: string): Promise<void> {
+  try {
+    await detachSession(env, sessionId);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    ui.warn(`Environment detach failed (${message}) — it may still be running; use ccw env stop.`);
+  }
 }
 
 /**
@@ -151,7 +165,7 @@ async function resumeWorktree(
     ui.success(`Resuming Claude Code session ${ui.dim(existingSessionId)}`);
     ui.blank();
     const exitCode = await launchClaude(['--resume', existingSessionId, '--name', featureName], targetDir);
-    if (envRunning) await detachSession(env, existingSessionId);
+    if (envRunning) await tryDetach(env, existingSessionId);
     process.exit(exitCode);
   }
 
@@ -179,7 +193,7 @@ async function resumeWorktree(
 
   ui.blank();
   const exitCode = await launchClaude(claudeArgs, targetDir);
-  if (envRunning) await detachSession(env, sessionId);
+  if (envRunning) await tryDetach(env, sessionId);
   process.exit(exitCode);
 }
 

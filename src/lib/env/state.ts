@@ -24,6 +24,18 @@ export interface EnvState {
   /** Present ⇒ env-setup succeeded once; don't re-run. */
   setupCompletedAt?: string;
   /**
+   * Claim that a ccw process is currently running env-setup for this
+   * feature. Written under the per-feature lock right before the hook is
+   * spawned (outside the lock, since it can run for up to
+   * SETUP_TIMEOUT_MS), and cleared under the lock once the hook finishes
+   * (success or failure). A concurrent caller that observes a claim whose
+   * pid is still alive knows setup is in progress elsewhere and does not
+   * wait for it; a claim whose pid has died (crashed setup) is treated as
+   * absent so the next caller can retry.
+   */
+  setupStartedAt?: string;
+  setupPid?: number;
+  /**
    * Byte size of env.log at the moment this env-start was spawned. Readiness
    * checks (ready_pattern) must only scan content written after this offset
    * — otherwise a ready line from a previous run makes a freshly restarted,

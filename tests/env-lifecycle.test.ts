@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ResolvedConfig } from '../src/lib/config.ts';
@@ -133,18 +134,68 @@ describe('runSetup', () => {
     expect(result.warning).toContain('chmod +x');
   });
 
-  test('concurrent setups: hook runs exactly once', async () => {
-    // The second caller blocks on the lock while the first runs the hook,
-    // rather than both observing "not completed yet" and double-running it.
+  // env-setup runs via spawnSync, which is deliberately blocking — and
+  // blocking spawnSync freezes Node's entire single-threaded event loop.
+  // Two `runSetup(h)` calls racing via Promise.all in the SAME process can
+  // therefore never really interleave: the instant the winner reaches
+  // spawnSync, the loser is frozen too and cannot observe anything until
+  // the winner's hook (and its finalize step, which then runs via
+  // already-queued microtasks before any of the loser's timers get a
+  // chance) has fully completed — at which point the loser just sees
+  // setupCompletedAt already set, not the in-progress claim. That's a
+  // testing artifact of single-process JS concurrency, not a flaw in the
+  // claim logic: in production, two `ccw` invocations are separate OS
+  // processes with independent event loops, so the winner's spawnSync
+  // cannot block the loser at all. The tests below simulate that real
+  // scenario with a genuinely separate process supplying the claim's pid.
+  test('a live claim naming another (real, alive) process is respected: env-setup is not re-run, caller gets an immediate warning', async () => {
     writeHook('env-setup', `echo run >> "$CCW_ENV_DIR/marker"; sleep 0.5`);
     const h = handle();
-    const [r1, r2] = await Promise.all([runSetup(h), runSetup(h)]);
-    const ran = [r1, r2].filter((r) => r.ran && r.ok);
-    expect(ran).toHaveLength(1);
+    await ensureState(h);
+
+    // A real, currently-alive pid distinct from ours, standing in for
+    // another ccw process's env-setup run. Detached so it survives
+    // independently of this test process (a plain backgrounded shell job
+    // does not reliably survive spawnSync returning).
+    const other = spawn('sleep', ['5'], { detached: true, stdio: 'ignore' });
+    other.unref();
+    const otherPid = other.pid!;
+    try {
+      const before = readState(h.paths)!;
+      writeState(h.paths, { ...before, setupStartedAt: new Date().toISOString(), setupPid: otherPid });
+
+      const result = await runSetup(h);
+      expect(result).toEqual({
+        ran: false,
+        ok: false,
+        warning: expect.stringContaining('already running'),
+      });
+      // The hook must not have run at all for the loser.
+      expect(existsSync(join(h.paths.scratchDir, 'marker'))).toBe(false);
+      // Only the claim's owner clears it — an onlooker must leave it alone.
+      expect(readState(h.paths)?.setupPid).toBe(otherPid);
+    } finally {
+      process.kill(otherPid, 'SIGKILL');
+    }
+  });
+
+  test('a claim whose pid has died (crashed setup) is stale: setup proceeds and completes, hook runs exactly once', async () => {
+    writeHook('env-setup', `echo run >> "$CCW_ENV_DIR/marker"`);
+    const h = handle();
+    await ensureState(h);
+    const before = readState(h.paths)!;
+    // A pid that is guaranteed not to be alive.
+    writeState(h.paths, { ...before, setupStartedAt: new Date().toISOString(), setupPid: 2 ** 22 - 7 });
+
+    const result = await runSetup(h);
+    expect(result).toEqual({ ran: true, ok: true });
     const marker = readFileSync(join(h.paths.scratchDir, 'marker'), 'utf-8').trim().split('\n');
     expect(marker).toHaveLength(1);
     expect(readState(h.paths)?.setupCompletedAt).toBeTruthy();
-  }, 15_000);
+    // The stale claim must be cleared once the hook finishes.
+    expect(readState(h.paths)?.setupStartedAt).toBeUndefined();
+    expect(readState(h.paths)?.setupPid).toBeUndefined();
+  });
 });
 
 function sleep(ms: number): Promise<void> {
