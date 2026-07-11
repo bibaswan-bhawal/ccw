@@ -234,3 +234,7 @@ vitest + existing `tests/` tree; `CCW_DATA_DIR` redirects all state to a temp di
   Claude — same style as existing session tests.
 - **Regression guard:** crash recovery — state file with a dead attacher PID → status
   prunes it and teardown eligibility is correct.
+- **Real-world validation:** the dermose_care project (which already has parallel
+  branch/worktree dev tooling) is the dogfood target — write its `.ccw/hooks/` against
+  this contract and exercise the full create → background start → Claude status/logs →
+  exit teardown loop before calling the feature done.
