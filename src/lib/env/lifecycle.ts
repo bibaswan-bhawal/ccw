@@ -1,10 +1,10 @@
 import { spawn, spawnSync } from 'node:child_process';
-import { closeSync, existsSync, mkdirSync, openSync, rmSync } from 'node:fs';
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ResolvedConfig } from '../config.ts';
 import { envPaths, envRoot, type EnvPaths } from './paths.ts';
 import { findHook, hookEnv, type HookLookup, type HookName } from './hooks.ts';
-import { allocateSlot, isPidAlive, readState, withLock, writeState, type EnvState } from './state.ts';
+import { allocateSlot, isPidAlive, pruneAttachments, readState, withLock, writeState, type EnvState, type EnvPhase } from './state.ts';
 
 /** Everything lifecycle functions need, precomputed once from ResolvedConfig. */
 export interface EnvHandle {
@@ -242,4 +242,167 @@ export async function stopEnvironment(handle: EnvHandle): Promise<void> {
 export async function removeEnvironment(handle: EnvHandle): Promise<void> {
   await stopEnvironment(handle);
   rmSync(handle.paths.root, { recursive: true, force: true });
+}
+
+const STATUS_HOOK_TIMEOUT_MS = 10_000;
+
+export interface EnvStatus {
+  exists: boolean;
+  phase: EnvPhase;
+  alive: boolean;
+  ready?: boolean;
+  /** Parsed env-status hook JSON, verbatim. */
+  hookStatus?: unknown;
+  warnings: string[];
+  logFile: string;
+  slot?: number;
+  attachedSessions: number;
+}
+
+interface ReconcileResult {
+  state: EnvState | undefined;
+  prunedToEmpty: boolean;
+}
+
+/** Prune dead attachers inside the lock; caller handles teardown outside it. */
+async function reconcile(handle: EnvHandle): Promise<ReconcileResult> {
+  return withLock(handle.paths.lockFile, () => {
+    const state = readState(handle.paths);
+    if (!state) return { state: undefined, prunedToEmpty: false };
+    const pruned = pruneAttachments(state);
+    if (pruned.changed) writeState(handle.paths, pruned.state);
+    return { state: pruned.state, prunedToEmpty: pruned.prunedToEmpty };
+  });
+}
+
+function runStatusHook(handle: EnvHandle, slot: number): { json?: unknown; warning?: string } {
+  const lookup = hook(handle, 'env-status');
+  if (!lookup) return {};
+  if (!lookup.executable) return { warning: notExecutableWarning(lookup) };
+  const result = spawnSync(lookup.path, [], {
+    cwd: handle.hookCwd,
+    env: buildHookEnv(handle, slot),
+    encoding: 'utf-8',
+    timeout: STATUS_HOOK_TIMEOUT_MS,
+  });
+  if (result.status !== 0) {
+    return { warning: `env-status exited with code ${result.status}` };
+  }
+  try {
+    return { json: JSON.parse(result.stdout) };
+  } catch {
+    return { warning: 'env-status did not print valid JSON' };
+  }
+}
+
+function grepReady(handle: EnvHandle): boolean | undefined {
+  if (!handle.readyPattern) return undefined;
+  if (!existsSync(handle.paths.logFile)) return false;
+  try {
+    return new RegExp(handle.readyPattern).test(readFileSync(handle.paths.logFile, 'utf-8'));
+  } catch {
+    // Invalid regex in config — fall back to substring.
+    return readFileSync(handle.paths.logFile, 'utf-8').includes(handle.readyPattern);
+  }
+}
+
+/**
+ * The lazy supervisor: called only on demand (ccw env status, create/resume,
+ * ls --json paths). Prunes crashed attachers (tearing down on the non-empty
+ * -> empty transition), reconciles phase against PID/hook/log evidence, and
+ * persists what it learned.
+ */
+export async function getStatus(handle: EnvHandle): Promise<EnvStatus> {
+  const { state, prunedToEmpty } = await reconcile(handle);
+  if (!state) {
+    return { exists: false, phase: 'stopped', alive: false, warnings: [], logFile: handle.paths.logFile, attachedSessions: 0 };
+  }
+
+  const wasActive = state.phase === 'starting' || state.phase === 'running';
+  if (prunedToEmpty && wasActive) {
+    await stopEnvironment(handle);
+    const after = readState(handle.paths);
+    return {
+      exists: true,
+      phase: after?.phase ?? 'stopped',
+      alive: false,
+      warnings: ['All attached sessions were gone (crashed?) — environment torn down.'],
+      logFile: handle.paths.logFile,
+      slot: state.slot,
+      attachedSessions: 0,
+    };
+  }
+
+  const warnings: string[] = [];
+  const alive = state.pid !== undefined && isPidAlive(state.pid);
+  const hookResult = wasActive || alive ? runStatusHook(handle, state.slot) : {};
+  if (hookResult.warning) warnings.push(hookResult.warning);
+
+  let ready: boolean | undefined;
+  if (hookResult.json !== undefined) {
+    ready = (hookResult.json as { ready?: unknown }).ready === true;
+  } else {
+    ready = grepReady(handle);
+  }
+
+  let phase = state.phase;
+  if (wasActive) {
+    if (alive) {
+      phase = ready === false ? 'starting' : 'running';
+    } else if (ready === true && hookResult.json !== undefined) {
+      // Self-daemonized: the start process is gone but the hook says healthy.
+      phase = 'running';
+      if (!hook(handle, 'env-stop')) {
+        warnings.push(
+          'Environment appears self-daemonizing but has no env-stop hook — ccw cannot tear it down automatically.',
+        );
+      }
+    } else {
+      phase = 'failed';
+    }
+    if (phase !== state.phase) {
+      await withLock(handle.paths.lockFile, () => {
+        const current = readState(handle.paths);
+        if (current) writeState(handle.paths, { ...current, phase });
+      });
+    }
+  }
+
+  return {
+    exists: true,
+    phase,
+    alive,
+    ready,
+    hookStatus: hookResult.json,
+    warnings,
+    logFile: handle.paths.logFile,
+    slot: state.slot,
+    attachedSessions: state.attachedSessions.length,
+  };
+}
+
+/** Record this ccw process as evidence that a session is using the env. */
+export async function attachSession(handle: EnvHandle, sessionId: string): Promise<void> {
+  await withLock(handle.paths.lockFile, () => {
+    const state = readState(handle.paths);
+    if (!state) return;
+    const attached = state.attachedSessions.filter((s) => s.sessionId !== sessionId);
+    attached.push({ sessionId, ccwPid: process.pid });
+    writeState(handle.paths, { ...state, attachedSessions: attached });
+  });
+}
+
+/** Remove our attachment; last one out turns off the lights. */
+export async function detachSession(handle: EnvHandle, sessionId: string): Promise<void> {
+  const lastOut = await withLock(handle.paths.lockFile, () => {
+    const state = readState(handle.paths);
+    if (!state) return false;
+    const pruned = pruneAttachments(state);
+    const remaining = pruned.state.attachedSessions.filter(
+      (s) => !(s.sessionId === sessionId && s.ccwPid === process.pid),
+    );
+    writeState(handle.paths, { ...pruned.state, attachedSessions: remaining });
+    return state.attachedSessions.length > 0 && remaining.length === 0;
+  });
+  if (lastOut) await stopEnvironment(handle);
 }

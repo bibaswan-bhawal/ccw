@@ -3,8 +3,8 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, wr
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ResolvedConfig } from '../src/lib/config.ts';
-import { createEnvHandle, ensureState, hasEnvHooks, runSetup, startEnvironment, stopEnvironment, removeEnvironment, type EnvHandle } from '../src/lib/env/lifecycle.ts';
-import { isPidAlive, readState } from '../src/lib/env/state.ts';
+import { attachSession, createEnvHandle, detachSession, ensureState, getStatus, hasEnvHooks, runSetup, startEnvironment, stopEnvironment, removeEnvironment, type EnvHandle } from '../src/lib/env/lifecycle.ts';
+import { isPidAlive, readState, writeState } from '../src/lib/env/state.ts';
 
 let tmp: string;
 let cfg: ResolvedConfig;
@@ -220,5 +220,124 @@ describe('removeEnvironment', () => {
     await startEnvironment(h);
     await removeEnvironment(h);
     expect(existsSync(h.paths.root)).toBe(false);
+  }, 15_000);
+});
+
+describe('getStatus', () => {
+  test('no state: exists=false', async () => {
+    const s = await getStatus(handle());
+    expect(s.exists).toBe(false);
+    expect(s.alive).toBe(false);
+  });
+
+  test('live process without readiness info reports running', async () => {
+    writeHook('env-start', 'sleep 30');
+    const h = handle();
+    await startEnvironment(h);
+    const s = await getStatus(h);
+    expect(s.alive).toBe(true);
+    expect(s.phase).toBe('running');
+    expect(readState(h.paths)?.phase).toBe('running'); // reconciled + persisted
+    await stopEnvironment(h);
+  }, 15_000);
+
+  test('ready_pattern gates starting -> running', async () => {
+    writeHook('env-start', 'echo warming; sleep 30');
+    const h = { ...handle(), readyPattern: 'Listening on' };
+    await startEnvironment(h);
+    await sleep(200);
+    let s = await getStatus(h);
+    expect(s.ready).toBe(false);
+    expect(s.phase).toBe('starting');
+    // Simulate the server becoming ready:
+    writeFileSync(h.paths.logFile, 'Listening on http://localhost:3000\n', { flag: 'a' });
+    s = await getStatus(h);
+    expect(s.ready).toBe(true);
+    expect(s.phase).toBe('running');
+    await stopEnvironment(h);
+  }, 15_000);
+
+  test('dead pid without env-status hook reports failed with log tail', async () => {
+    writeHook('env-start', 'echo died-immediately; exit 1');
+    const h = handle();
+    await startEnvironment(h);
+    await sleep(300); // let it die
+    const s = await getStatus(h);
+    expect(s.alive).toBe(false);
+    expect(s.phase).toBe('failed');
+  });
+
+  test('env-status hook JSON drives readiness for daemonized envs', async () => {
+    writeHook('env-start', 'exit 0'); // self-daemonizing shape: exits immediately
+    writeHook('env-status', `echo '{"ready": true, "services": [{"name":"web","url":"http://localhost:3000"}]}'`);
+    const h = handle();
+    await startEnvironment(h);
+    await sleep(300);
+    const s = await getStatus(h);
+    expect(s.ready).toBe(true);
+    expect(s.phase).toBe('running');
+    expect((s.hookStatus as { services: unknown[] }).services).toHaveLength(1);
+    // Daemonized without env-stop: ccw can't tear it down — must warn.
+    expect(s.warnings.some((w) => w.includes('env-stop'))).toBe(true);
+  });
+
+  test('malformed env-status JSON yields warning, not crash', async () => {
+    writeHook('env-start', 'sleep 30');
+    writeHook('env-status', 'echo not-json');
+    const h = handle();
+    await startEnvironment(h);
+    const s = await getStatus(h);
+    expect(s.warnings.some((w) => w.includes('env-status'))).toBe(true);
+    await stopEnvironment(h);
+  }, 15_000);
+});
+
+describe('attach/detach', () => {
+  test('attach records session with our pid', async () => {
+    const h = handle();
+    await ensureState(h);
+    await attachSession(h, 'session-1');
+    expect(readState(h.paths)?.attachedSessions).toEqual([{ sessionId: 'session-1', ccwPid: process.pid }]);
+  });
+
+  test('last detach tears down the environment', async () => {
+    writeHook('env-start', 'sleep 30');
+    const h = handle();
+    await startEnvironment(h);
+    await attachSession(h, 'session-1');
+    const pid = readState(h.paths)!.pid!;
+    await detachSession(h, 'session-1');
+    expect(isPidAlive(pid)).toBe(false);
+    expect(readState(h.paths)?.phase).toBe('stopped');
+  }, 15_000);
+
+  test('detach with another live attacher does not tear down', async () => {
+    writeHook('env-start', 'sleep 30');
+    const h = handle();
+    await startEnvironment(h);
+    await attachSession(h, 'session-1');
+    // Another live attacher: use our own pid as evidence of liveness.
+    const st = readState(h.paths)!;
+    writeState(h.paths, {
+      ...st,
+      attachedSessions: [...st.attachedSessions, { sessionId: 'session-2', ccwPid: process.pid }],
+    });
+    const pid = readState(h.paths)!.pid!;
+    await detachSession(h, 'session-1');
+    expect(isPidAlive(pid)).toBe(true);
+    await stopEnvironment(h);
+  }, 15_000);
+
+  test('prune-to-empty via getStatus tears down (crash recovery)', async () => {
+    writeHook('env-start', 'sleep 30');
+    const h = handle();
+    await startEnvironment(h);
+    const st = readState(h.paths)!;
+    // A dead ccw pid: evidence of a crashed terminal.
+    writeState(h.paths, { ...st, attachedSessions: [{ sessionId: 'ghost', ccwPid: 2 ** 22 - 7 }] });
+    const pid = st.pid!;
+    await getStatus(h);
+    expect(isPidAlive(pid)).toBe(false);
+    expect(readState(h.paths)?.phase).toBe('stopped');
   }, 15_000);
 });
