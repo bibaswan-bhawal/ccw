@@ -3,7 +3,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, wr
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ResolvedConfig } from '../src/lib/config.ts';
-import { createEnvHandle, ensureState, hasEnvHooks, runSetup, startEnvironment, type EnvHandle } from '../src/lib/env/lifecycle.ts';
+import { createEnvHandle, ensureState, hasEnvHooks, runSetup, startEnvironment, stopEnvironment, removeEnvironment, type EnvHandle } from '../src/lib/env/lifecycle.ts';
 import { isPidAlive, readState } from '../src/lib/env/state.ts';
 
 let tmp: string;
@@ -181,4 +181,44 @@ describe('startEnvironment', () => {
     expect(result.started).toBe(false);
     expect(result.warning).toContain('chmod +x');
   });
+});
+
+describe('stopEnvironment', () => {
+  test('kills the process group of a foreground env-start', async () => {
+    // Hook spawns a child of its own so we verify the whole GROUP dies.
+    writeHook('env-start', 'sleep 30 & sleep 30');
+    const h = handle();
+    await startEnvironment(h);
+    const pid = readState(h.paths)!.pid!;
+    expect(isPidAlive(pid)).toBe(true);
+    await stopEnvironment(h);
+    expect(isPidAlive(pid)).toBe(false);
+    const state = readState(h.paths);
+    expect(state?.phase).toBe('stopped');
+    expect(state?.pid).toBeUndefined();
+  }, 15_000);
+
+  test('prefers env-stop hook and still reaps the group', async () => {
+    writeHook('env-start', 'sleep 30');
+    writeHook('env-stop', `echo stopped-by-hook >> "$CCW_ENV_DIR/marker"`);
+    const h = handle();
+    await startEnvironment(h);
+    await stopEnvironment(h);
+    expect(readFileSync(join(h.paths.scratchDir, 'marker'), 'utf-8')).toContain('stopped-by-hook');
+    expect(readState(h.paths)?.phase).toBe('stopped');
+  }, 15_000);
+
+  test('no state: no-op', async () => {
+    await expect(stopEnvironment(handle())).resolves.toBeUndefined();
+  });
+});
+
+describe('removeEnvironment', () => {
+  test('stops and deletes the env dir (slot freed)', async () => {
+    writeHook('env-start', 'sleep 30');
+    const h = handle();
+    await startEnvironment(h);
+    await removeEnvironment(h);
+    expect(existsSync(h.paths.root)).toBe(false);
+  }, 15_000);
 });

@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from 'node:child_process';
-import { closeSync, existsSync, mkdirSync, openSync } from 'node:fs';
+import { closeSync, existsSync, mkdirSync, openSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ResolvedConfig } from '../config.ts';
 import { envPaths, envRoot, type EnvPaths } from './paths.ts';
@@ -171,4 +171,75 @@ export async function startEnvironment(handle: EnvHandle): Promise<StartResult> 
     writeState(handle.paths, { ...current, phase: 'starting', pid, startedAt: new Date().toISOString() });
   });
   return { started: true, alreadyRunning: false };
+}
+
+const STOP_HOOK_TIMEOUT_MS = 30_000;
+const KILL_GRACE_MS = 5_000;
+
+function sleepMs(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function killProcessGroup(pid: number): Promise<void> {
+  const signal = (sig: NodeJS.Signals) => {
+    try {
+      process.kill(-pid, sig); // whole group
+    } catch {
+      try {
+        process.kill(pid, sig); // group already gone; try the leader
+      } catch {
+        /* already dead */
+      }
+    }
+  };
+  signal('SIGTERM');
+  const deadline = Date.now() + KILL_GRACE_MS;
+  while (Date.now() < deadline) {
+    if (!isPidAlive(pid)) return;
+    await sleepMs(100);
+  }
+  signal('SIGKILL');
+}
+
+/**
+ * Teardown: env-stop hook first (bounded — teardown must never hang the
+ * terminal), then reap whatever's left of the process group. Safe to call
+ * when nothing is running.
+ */
+export async function stopEnvironment(handle: EnvHandle): Promise<void> {
+  const state = readState(handle.paths);
+  if (!state) return;
+
+  const lookup = hook(handle, 'env-stop');
+  if (lookup?.executable) {
+    mkdirSync(handle.paths.scratchDir, { recursive: true });
+    const logFd = openSync(handle.paths.logFile, 'a');
+    try {
+      spawnSync(lookup.path, [], {
+        cwd: handle.hookCwd,
+        env: buildHookEnv(handle, state.slot),
+        stdio: ['ignore', logFd, logFd],
+        timeout: STOP_HOOK_TIMEOUT_MS,
+      });
+    } finally {
+      closeSync(logFd);
+    }
+  }
+
+  if (state.pid && isPidAlive(state.pid)) {
+    await killProcessGroup(state.pid);
+  }
+
+  await withLock(handle.paths.lockFile, () => {
+    const current = readState(handle.paths);
+    if (!current) return;
+    const { pid: _pid, ...rest } = current;
+    writeState(handle.paths, { ...rest, phase: 'stopped' });
+  });
+}
+
+/** `ccw rm`: teardown, then delete the env dir — which frees the slot. */
+export async function removeEnvironment(handle: EnvHandle): Promise<void> {
+  await stopEnvironment(handle);
+  rmSync(handle.paths.root, { recursive: true, force: true });
 }
