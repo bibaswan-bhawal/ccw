@@ -31,6 +31,29 @@ ${task.claudeContext}`;
 }
 
 /**
+ * System prompt section injected when this worktree has an env-start hook.
+ * Static facts only — the environment may still be booting when Claude
+ * starts, so we point at the commands rather than assert liveness.
+ */
+export function buildEnvironmentSystemPrompt(logFile: string): string {
+  return `A development environment for this worktree is starting in the background.
+- Check state: \`ccw env status --json\`
+- Logs: \`ccw env logs\` (file: ${logFile})
+- Restart after config changes: \`ccw env restart\`
+Verify the environment is ready before using it for testing.`;
+}
+
+/**
+ * Claude gets at most one --append-system-prompt; merge task context and
+ * environment sections into a single blob.
+ */
+export function combineSystemPrompts(sections: Array<string | undefined>): string | undefined {
+  const nonEmpty = sections.filter((s): s is string => Boolean(s && s.length > 0));
+  if (nonEmpty.length === 0) return undefined;
+  return nonEmpty.join('\n\n');
+}
+
+/**
  * Reset stdin to a clean state before handing the terminal to the child.
  *
  * Before launching Claude, ccw renders interactive Ink UI (spinners, pickers,
