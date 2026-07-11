@@ -34,6 +34,10 @@ Out of scope:
 - Vulnerabilities in [Claude Code](https://docs.claude.com/en/docs/claude-code) itself — those go to Anthropic.
 - Theoretical attacks requiring root, local filesystem write access to `~/.ccw/`, or a compromised CI environment that the maintainer also has access to. ccw doesn't defend against an attacker who already owns your machine.
 
+## Environment hooks are arbitrary code
+
+ccw's isolated-environments feature (`.ccw/hooks/env-setup`, `env-start`, `env-stop`, `env-status`) runs whatever scripts are committed to the repo — automatically, with no prompt or sandbox, as soon as you run `ccw <feature>` on a worktree. This is by design (it's the whole point of the feature), but it means those hooks are exactly as trustworthy as any other committed file: review `.ccw/hooks/` (and `~/.ccw/repos/<repo>/hooks/`, for the user-level variant) before opening a worktree on a repo you don't fully trust, the same way you'd review a `postinstall` script. ccw does not sandbox, sign, or otherwise vet hook contents — that responsibility stays with whoever reviews the repo.
+
 ## Release Integrity
 
 Every release ships with three independent verification layers:

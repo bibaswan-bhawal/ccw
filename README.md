@@ -140,7 +140,7 @@ PORT=$((3000 + CCW_WORKTREE_SLOT)) exec bin/dev
 | Command           | Description                                    |
 | ----------------- | ---------------------------------------------- |
 | `ccw env status`  | State, readiness, services (`--json` for CI)   |
-| `ccw env logs`    | Environment log (`-f` to follow)               |
+| `ccw env logs`    | Environment log (`-n`/`--lines` count, `-f` to follow) |
 | `ccw env start`   | Start (runs setup first if needed)             |
 | `ccw env stop`    | Stop now                                       |
 | `ccw env restart` | The "I broke it" recovery loop                 |
@@ -149,6 +149,12 @@ Can't commit files to the repo? Put the same hooks in
 `~/.ccw/repos/<encoded-git-root>/hooks/` instead — in-tree wins when both exist.
 Optional: set `environment.ready_pattern` in the repo config to a regex that,
 when it appears in the log, marks the environment ready.
+
+> **Security note:** env hooks are arbitrary code, committed to the repo like
+> any other file. ccw executes them automatically the moment you run
+> `ccw <feature>` on a worktree — there is no prompt or sandbox. Review
+> `.ccw/hooks/` before opening worktrees on a repo you don't fully trust,
+> the same way you'd review a `postinstall` script or a Makefile.
 
 ## Plugins
 
