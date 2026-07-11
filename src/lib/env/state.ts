@@ -1,7 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import type { EnvPaths } from './paths.ts';
-import { envRoot } from './paths.ts';
+import { dirname } from 'node:path';
+import { envPaths, envRoot, type EnvPaths } from './paths.ts';
 
 export type EnvPhase = 'setup' | 'starting' | 'running' | 'stopped' | 'failed';
 
@@ -74,6 +73,21 @@ function sleep(ms: number): Promise<void> {
  * Serialize mutations with an O_EXCL lock file containing the holder's PID.
  * A lock whose holder is dead is stale and gets stolen — a crashed ccw must
  * not wedge the worktree's environment forever.
+ *
+ * Steal path uses claim-by-rename rather than a bare unlink: `renameSync` is
+ * atomic, so when multiple racers observe the same dead holder, exactly one
+ * of them wins the rename onto a per-pid claim path and the rest fail and
+ * retry. This closes a TOCTOU where two racers could each read a dead
+ * holder, both unlink, and both then believe they're free to recreate the
+ * lock — the old bug that let two callers hold the lock concurrently.
+ *
+ * Residual guarantee: steals are fully serialized by the rename. The only
+ * remaining window is between the winner's read of the (dead) holder and
+ * its renameSync call — if a new holder recreates the lock in that
+ * microsecond-scale gap, the winner detects the mismatch after claiming and
+ * restores the new content instead of clobbering it. That window is
+ * acceptable because critical sections guarded by this lock are
+ * millisecond-scale file mutations, not long-held resources.
  */
 export async function withLock<T>(lockFile: string, fn: () => T | Promise<T>): Promise<T> {
   mkdirSync(dirname(lockFile), { recursive: true });
@@ -81,17 +95,49 @@ export async function withLock<T>(lockFile: string, fn: () => T | Promise<T>): P
     try {
       writeFileSync(lockFile, String(process.pid), { flag: 'wx' });
     } catch {
+      let captured: string;
       try {
-        const holder = Number(readFileSync(lockFile, 'utf-8'));
-        if (Number.isInteger(holder) && holder > 0 && !isPidAlive(holder)) {
-          unlinkSync(lockFile);
-          continue;
-        }
+        captured = readFileSync(lockFile, 'utf-8');
       } catch {
         /* lock vanished between attempts — retry immediately */
         continue;
       }
-      await sleep(LOCK_RETRY_MS);
+      const holder = Number(captured);
+      // Non-numeric content is treated as a live holder and simply retried
+      // until timeout (~5s) — an intentional fail-safe: we'd rather wait out
+      // garbled content than risk stealing a lock that's actually held.
+      if (!(Number.isInteger(holder) && holder > 0 && !isPidAlive(holder))) {
+        await sleep(LOCK_RETRY_MS);
+        continue;
+      }
+      const claim = `${lockFile}.steal-${process.pid}`;
+      try {
+        renameSync(lockFile, claim);
+      } catch {
+        // Another racer won the rename (or a live holder already replaced
+        // the name); back off and retry rather than fight over it.
+        continue;
+      }
+      try {
+        const claimedContent = readFileSync(claim, 'utf-8');
+        if (claimedContent === captured) {
+          // Still names the dead holder we saw before renaming — free to
+          // remove. The next iteration's `wx` create decides who acquires.
+          unlinkSync(claim);
+        } else {
+          // A live lock slipped in under the old name between our read and
+          // our rename. Restore it without clobbering a newer holder that
+          // may have already recreated the name in the meantime.
+          try {
+            writeFileSync(lockFile, claimedContent, { flag: 'wx' });
+          } catch {
+            /* a newer holder took the name in the interim — accept */
+          }
+          unlinkSync(claim);
+        }
+      } catch {
+        /* claimed file vanished unexpectedly — nothing to restore */
+      }
       continue;
     }
     try {
@@ -137,7 +183,7 @@ export function allocateSlot(repoConfigPath: string): number {
     for (const entry of readdirSync(root, { withFileTypes: true })) {
       if (!entry.isDirectory()) continue;
       try {
-        const raw = JSON.parse(readFileSync(join(root, entry.name, 'state.json'), 'utf-8')) as { slot?: number };
+        const raw = JSON.parse(readFileSync(envPaths(repoConfigPath, entry.name).stateFile, 'utf-8')) as { slot?: number };
         if (typeof raw.slot === 'number') used.add(raw.slot);
       } catch {
         /* absent or corrupt — holds no slot */

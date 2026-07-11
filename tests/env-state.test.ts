@@ -98,6 +98,23 @@ describe('withLock', () => {
     const result = await withLock(p.lockFile, () => 'ok');
     expect(result).toBe('ok');
   });
+
+  test('concurrent withLock calls serialize (mutual exclusion)', async () => {
+    const p = envPaths(repoConfigPath, 'feat-a');
+    let inside = 0;
+    let maxInside = 0;
+    await Promise.all(
+      [1, 2, 3].map(() =>
+        withLock(p.lockFile, async () => {
+          inside++;
+          maxInside = Math.max(maxInside, inside);
+          await new Promise((r) => setTimeout(r, 30));
+          inside--;
+        }),
+      ),
+    );
+    expect(maxInside).toBe(1);
+  });
 });
 
 describe('pruneAttachments', () => {
