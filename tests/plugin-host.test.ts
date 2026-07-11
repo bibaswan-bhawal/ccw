@@ -13,6 +13,7 @@ function buildConfig(pluginConfigs: Record<string, unknown>): ResolvedConfig {
     dataDir: '/tmp/.ccw',
     sessionsFile: '/tmp/.ccw/sessions.json',
     repoConfigPath: '/tmp/repo/.ccw.json',
+    environment: {},
   };
 }
 

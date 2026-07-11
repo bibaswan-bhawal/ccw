@@ -23,6 +23,12 @@ export interface RepoConfig {
   jira_base_url?: string;
   jira_project?: string;
   jira_board_id?: string;
+
+  /** Optional environment settings for worktree env hooks. */
+  environment?: {
+    /** Substring/regex matched against env.log to decide readiness. */
+    ready_pattern?: string;
+  };
 }
 
 export interface ResolvedConfig {
@@ -37,6 +43,8 @@ export interface ResolvedConfig {
   sessionsFile: string;
   /** Path of the active per-repo config file under ~/.ccw/repos/<encoded>/config.json */
   repoConfigPath: string;
+  /** Resolved environment settings for worktree env hooks (empty when unset). */
+  environment: { readyPattern?: string };
 }
 
 /**
@@ -189,7 +197,7 @@ export function loadConfigForInit(): ResolvedConfig {
   return resolveFromRaw(base, raw ?? {});
 }
 
-interface ConfigBase {
+export interface ConfigBase {
   gitRoot: string;
   repoName: string;
   repoConfigPath: string;
@@ -242,7 +250,7 @@ function loadConfigInternal(): LoadResult {
   return { config: resolveFromRaw(base, raw!), migratedFromInTree };
 }
 
-function resolveFromRaw(base: ConfigBase, raw: RepoConfig): ResolvedConfig {
+export function resolveFromRaw(base: ConfigBase, raw: RepoConfig): ResolvedConfig {
   return {
     gitRoot: base.gitRoot,
     repoName: base.repoName,
@@ -253,6 +261,7 @@ function resolveFromRaw(base: ConfigBase, raw: RepoConfig): ResolvedConfig {
     dataDir: base.dataDir,
     sessionsFile: base.sessionsFile,
     repoConfigPath: base.repoConfigPath,
+    environment: raw.environment?.ready_pattern ? { readyPattern: raw.environment.ready_pattern } : {},
   };
 }
 

@@ -93,3 +93,48 @@ describe('legacy in-tree migration', () => {
     expect(JSON.parse(readFileSync(userPath, 'utf-8'))).toEqual(legacyConfig);
   });
 });
+
+describe('environment config block', () => {
+  // resolveFromRaw is the pure resolution step loadConfig/loadConfigForInit
+  // delegate to after reading the on-disk RepoConfig (see readRawRepoConfig +
+  // readBase). We exercise it the same way the "legacy in-tree migration"
+  // test above exercises writeRepoConfig/userRepoConfigPath directly, rather
+  // than going through loadConfig(): that requires a real getGitRoot() call,
+  // which shells out via Bun.spawnSync and isn't available under vitest's
+  // node runtime (see the comment in the migration test above).
+  function fakeBase(gitRoot: string): import('../src/lib/config.ts').ConfigBase {
+    return {
+      gitRoot,
+      repoName: 'repo',
+      repoConfigPath: join(gitRoot, 'config.json'),
+      detectedBranch: 'main',
+      defaultWorktreeDir: join(gitRoot, '..', 'repo_worktrees'),
+      dataDir: join(gitRoot, '.ccw-data'),
+      sessionsFile: join(gitRoot, '.ccw-data', 'sessions.json'),
+    };
+  }
+
+  test('resolves environment.ready_pattern from repo config', async () => {
+    const gitRoot = mkdtempSync(join(tmp, 'repo-env-'));
+    const configPath = join(gitRoot, 'config.json');
+    writeFileSync(configPath, JSON.stringify({ environment: { ready_pattern: 'Listening on' } }));
+
+    const { resolveFromRaw } = await import('../src/lib/config.ts');
+    const raw = JSON.parse(readFileSync(configPath, 'utf-8'));
+    const cfg = resolveFromRaw(fakeBase(gitRoot), raw);
+
+    expect(cfg.environment.readyPattern).toBe('Listening on');
+  });
+
+  test('environment block defaults to empty object', async () => {
+    const gitRoot = mkdtempSync(join(tmp, 'repo-env-'));
+    const configPath = join(gitRoot, 'config.json');
+    writeFileSync(configPath, JSON.stringify({}));
+
+    const { resolveFromRaw } = await import('../src/lib/config.ts');
+    const raw = JSON.parse(readFileSync(configPath, 'utf-8'));
+    const cfg = resolveFromRaw(fakeBase(gitRoot), raw);
+
+    expect(cfg.environment).toEqual({});
+  });
+});
